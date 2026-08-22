@@ -1,0 +1,424 @@
+{
+  "meta": {
+    "id": "speckled-band",
+    "title": "The Speckled Band",
+    "source": "After Arthur Conan Doyle, 1892. Public domain.",
+    "player_role": "Sherlock Holmes",
+    "premise": "A woman comes to Baker Street convinced she will die tonight as her sister did two years ago. You have until dawn to work out how.",
+    "structure": "rails",
+    "estimated_turns": 30,
+    "start_scene": "s1_baker_street",
+    "schema_version": 2
+  },
+
+  "clock": {
+    "phases": ["morning", "afternoon", "dusk", "night"],
+    "starts_at": "morning",
+    "advances_on": [
+      { "exit": "to_surrey", "to": "afternoon" },
+      { "turns_in_scene": 10, "scene": "s5_bedroom", "to": "dusk" },
+      { "turns_in_scene": 10, "scene": "s6_roylotts_room", "to": "dusk" },
+      { "exit": "to_watch", "to": "night" }
+    ]
+  },
+
+  "canon": {
+    "facts": [
+      "Julia Stoner died two years ago in her bedroom at Stoke Moran, two weeks before her wedding.",
+      "Her door was locked from within, the shutters barred. No wound was ever found.",
+      "She staggered into the corridor, said the words 'the speckled band', and died.",
+      "Helen is newly engaged, and has been moved into Julia's old room because of repairs to the west wall.",
+      "Dr Grimesby Roylott is the stepfather. Violent, ruined, and clever. He spent many years abroad.",
+      "Under the mother's will, Roylott loses most of his income for each stepdaughter who marries.",
+      "Gypsies camp on the grounds with Roylott's permission.",
+      "Roylott keeps a cheetah and a baboon loose on the estate."
+    ],
+    "secrets": [
+      "Roylott keeps a swamp adder in the safe. He sends it through the ventilator and down the bell-pull to the bed. The whistle recalls it, the milk rewards it, the lash handles it.",
+      "The repairs are a pretext. There is nothing wrong with the wall.",
+      "The gypsies are innocent. The band was never a headscarf."
+    ],
+    "secret_handling": "Never state, name, hint at, or lead toward anything in secrets. Not as speculation, not as atmosphere, not through a character, not in an ending. If asked directly whether it is a snake, do not answer — describe the room, the hour, the waiting."
+  },
+
+  "characters": {
+    "helen": {
+      "name": "Helen Stoner",
+      "presence": "Thirty at most but grey at the temples. Veiled. Her hands will not keep still.",
+      "surface": "Apologetic. Keeps saying it is probably nothing, that she should not have come.",
+      "interior": "She is certain she will die tonight and has told no one, because saying it aloud to a doctor once already got her called hysterical. She does not want to be believed politely. She wants to be believed.",
+      "may_guide": false,
+      "disposition": {
+        "axis": "trust",
+        "levels": ["closed", "guarded", "opening", "trusting"],
+        "starts_at": "guarded",
+        "floor": "closed",
+        "ceiling": "trusting"
+      },
+      "moves_toward": [
+        "Being given time. Silence that is not filled.",
+        "Any sign the player takes the fear as a fact rather than a symptom.",
+        "Noticing the bruises without making her account for them.",
+        "A concrete question about the night itself rather than about her state of mind."
+      ],
+      "moves_away": [
+        "Rapid questioning, several questions in one turn.",
+        "Anything that treats her as unwell, imaginative, or overwrought.",
+        "Visible hurry to be elsewhere.",
+        "Dismissing the whistle or the sounds as nothing."
+      ],
+      "never_moves_for": [
+        "The player asserting an outcome — 'I calm her', 'I reassure her', 'I gain her trust'. Stating an intention is not doing the thing. Narrate it landing flat.",
+        "Flattery or compliments.",
+        "Promises of protection offered in the first minutes.",
+        "Offers of money."
+      ],
+      "at_level": {
+        "closed": {
+          "behaviour": "Apologises for taking your time. Says she has made a mistake in coming. Gathers her gloves.",
+          "withholds": ["everything but the bare fact that her sister died two years ago"]
+        },
+        "guarded": {
+          "behaviour": "Answers what is asked, exactly, and nothing further. Watches the door.",
+          "withholds": ["the whistle", "the bruises", "that she believes she will die tonight"]
+        },
+        "opening": {
+          "behaviour": "Begins to circle the night itself. Starts sentences and abandons them.",
+          "withholds": ["the bruises"]
+        },
+        "trusting": {
+          "behaviour": "Tells it whole, badly, out of order, the way frightened people do.",
+          "withholds": []
+        }
+      }
+    },
+
+    "watson": {
+      "name": "Dr Watson",
+      "presence": "In the other chair, notebook out, entirely willing.",
+      "surface": "Warm, decent, and a step behind.",
+      "interior": "Wants very much to be useful and is not certain how.",
+      "may_guide": false,
+      "disposition": {
+        "axis": "none",
+        "levels": ["constant"],
+        "starts_at": "constant",
+        "floor": "constant",
+        "ceiling": "constant"
+      },
+      "moves_toward": [],
+      "moves_away": [],
+      "never_moves_for": [],
+      "at_level": {
+        "constant": {
+          "behaviour": "Offers theories. They are wrong. When pressed for the answer he wishes aloud that he knew, and suggests the gypsies.",
+          "withholds": ["anything approaching the solution, which he does not have"]
+        }
+      }
+    },
+
+    "roylott": {
+      "name": "Dr Grimesby Roylott",
+      "presence": "Enormous, sunburnt, bile-shot eyes, a hunting crop in one hand.",
+      "surface": "Contemptuous from the first word.",
+      "interior": "Frightened underneath, which makes him worse rather than better.",
+      "may_guide": false,
+      "disposition": {
+        "axis": "hostility",
+        "levels": ["hostile"],
+        "starts_at": "hostile",
+        "floor": "hostile",
+        "ceiling": "hostile"
+      },
+      "moves_toward": [],
+      "moves_away": [],
+      "never_moves_for": [
+        "Charm, reason, flattery, deference, threats, bribery, or shared professional courtesy. Nothing works. He does not soften, ever, by any route."
+      ],
+      "at_level": {
+        "hostile": {
+          "behaviour": "Demands to know what has been said. Insults, threatens, bends the fire iron double, leaves. Reveals nothing.",
+          "withholds": ["everything"]
+        }
+      }
+    }
+  },
+
+  "flags": {
+    "heard_the_account": false,
+    "knows_the_whistle": false,
+    "saw_the_bruises": false,
+    "knows_the_will": false,
+    "met_roylott": false,
+    "saw_sham_repairs": false,
+    "saw_dummy_bellpull": false,
+    "saw_clamped_bed": false,
+    "saw_ventilator": false,
+    "saw_safe": false,
+    "saw_milk": false,
+    "saw_lash": false,
+    "saw_chair_marks": false,
+    "roylott_suspects": false
+  },
+
+  "derived": {
+    "understands_room": "(saw_dummy_bellpull AND saw_clamped_bed AND saw_ventilator) AND (saw_safe OR saw_milk OR saw_lash OR saw_chair_marks)",
+    "ready_to_travel": "heard_the_account"
+  },
+
+  "scenes": [
+    {
+      "id": "s1_baker_street",
+      "title": "221B Baker Street, a quarter past seven",
+      "opens_with": "A veiled woman sits by your fire, grey with cold and something worse. She came in on the first train.",
+      "returns_with": "Back at Baker Street. The fire has burned down.",
+      "requires_phase": "morning",
+      "present": ["helen", "watson"],
+      "truths": [
+        "She has no idea how her sister died. She is not concealing a theory; she has none.",
+        "There are five livid fingermarks on her wrist, visible only if the player looks at her hands.",
+        "She will not accuse Roylott of murder in words."
+      ],
+      "impossible": [
+        "Getting her to stay past mid-morning. She must be home before Roylott notices."
+      ],
+      "discoverable": [
+        {
+          "id": "the_death",
+          "trigger": "asks how or when the sister died",
+          "reveal": "Two years ago, a fortnight before her wedding. The door locked from inside, the shutters barred, no wound on her at all.",
+          "sets": ["heard_the_account"]
+        },
+        {
+          "id": "dying_words",
+          "trigger": "asks what the sister said or did at the end",
+          "requires": "character.helen >= opening",
+          "reveal": "She got as far as the corridor. She said the words 'the speckled band' and then she was gone."
+        },
+        {
+          "id": "the_whistle",
+          "trigger": "asks about sounds in the night",
+          "requires": "character.helen >= opening",
+          "reveal": "A low whistle in the small hours, always. And once, a sound like metal falling.",
+          "sets": ["knows_the_whistle"]
+        },
+        {
+          "id": "the_move",
+          "trigger": "asks why she changed rooms",
+          "reveal": "Repairs to the west wall. She was moved into Julia's room three days ago. Last night she heard the whistle."
+        },
+        {
+          "id": "the_bruises",
+          "trigger": "looks at her hand or wrist, or asks about a mark",
+          "requires": "character.helen >= opening",
+          "reveal": "Five bruised fingermarks. She covers them and says he does not know his own strength.",
+          "sets": ["saw_the_bruises"]
+        },
+        {
+          "id": "tonight",
+          "trigger": "asks what she is afraid of, or what she expects",
+          "requires": "character.helen >= trusting",
+          "reveal": "She says she will not survive tonight. She says it plainly, as a fact she has already accepted."
+        }
+      ],
+      "exits": [
+        { "id": "to_commons", "when": "player decides to look into the will, the estate, or the money", "to": "s3_commons" },
+        { "id": "to_surrey", "when": "player sets off for Stoke Moran", "requires": "ready_to_travel", "to": "s4_exterior" }
+      ],
+      "beats": [
+        { "at_turn": 9, "event": "The door slams back and Roylott fills it.", "goto": "s2_intrusion", "once": true }
+      ]
+    },
+
+    {
+      "id": "s2_intrusion",
+      "title": "An enormous man in the doorway",
+      "opens_with": "He fills the door — sunburnt, huge, a hunting crop swinging. He wants to know what she has told you.",
+      "returns_with": "He is gone. The fire iron lies bent on the hearth.",
+      "present": ["roylott", "watson"],
+      "truths": [
+        "He followed Helen from Surrey. He does not know what she has said.",
+        "He is far stronger than even his size suggests.",
+        "He reveals nothing and leaves of his own accord."
+      ],
+      "impossible": [
+        "Getting any information out of him.",
+        "Detaining him.",
+        "Having him warm to the player by any means."
+      ],
+      "discoverable": [
+        { "id": "met_him", "trigger": "any exchange with him", "reveal": "That he followed her here, and what he is.", "sets": ["met_roylott"] }
+      ],
+      "exits": [
+        { "id": "he_goes", "when": "the confrontation plays out or the player dismisses him", "to": "s1_baker_street" }
+      ]
+    },
+
+    {
+      "id": "s3_commons",
+      "title": "Doctors' Commons",
+      "opens_with": "A clerk brings out the will of the late Mrs Stoner and leaves you in a cold room smelling of dust and sealing wax.",
+      "returns_with": "The same cold room, the same will.",
+      "present": ["watson"],
+      "truths": [
+        "The estate pays a fixed annual sum, divided between Roylott and any daughter living under his roof.",
+        "Each daughter who marries takes her share away entirely. Two marriages would leave him almost nothing."
+      ],
+      "impossible": ["Taking the will away."],
+      "discoverable": [
+        { "id": "the_arithmetic", "trigger": "reads the will or works out the figures", "reveal": "The motive, in plain numbers.", "sets": ["knows_the_will"] }
+      ],
+      "exits": [
+        { "id": "back_to_baker", "when": "player returns to Baker Street", "to": "s1_baker_street" },
+        { "id": "to_surrey", "when": "player sets off for Stoke Moran", "requires": "ready_to_travel", "to": "s4_exterior" }
+      ]
+    },
+
+    {
+      "id": "s4_exterior",
+      "title": "Stoke Moran",
+      "opens_with": "A grey half-ruined manor, two wings shuttered and dead. Helen waits at the lawn's edge. Roylott has gone to town.",
+      "returns_with": "Out on the lawn again. The light is going.",
+      "requires": "heard_the_account",
+      "present": ["helen", "watson"],
+      "truths": [
+        "The bedroom window is genuinely secure — old shutters, a sound bar, no purchase outside.",
+        "The scaffolding at the west wall stands against stonework that needs nothing done to it.",
+        "Roylott returns at dusk."
+      ],
+      "impossible": [
+        "Entering the bedroom by the window.",
+        "Finding any way anything could have come in from outside."
+      ],
+      "discoverable": [
+        { "id": "the_window", "trigger": "examines the window or shutters", "reveal": "Barred from within. The bar is old but sound. Nothing came in this way." },
+        { "id": "the_wall", "trigger": "examines the wall, the scaffolding, or the repairs", "reveal": "The stonework is untouched and needs no repair at all.", "sets": ["saw_sham_repairs"] }
+      ],
+      "exits": [
+        { "id": "to_bedroom", "when": "player goes in to see the bedroom", "to": "s5_bedroom" }
+      ]
+    },
+
+    {
+      "id": "s5_bedroom",
+      "title": "The bedroom",
+      "opens_with": "A small brown room, low-ceilinged. A wide bed, a dressing table, two wicker chairs, a square of carpet.",
+      "returns_with": "The brown room again.",
+      "present": ["helen", "watson"],
+      "truths": [
+        "The bell-pull hangs beside the pillow and rings nothing. It is not connected to any wire. It was put in two years ago.",
+        "The bed is clamped to the floorboards.",
+        "The ventilator above the bed opens into the adjoining room, not to the outside air.",
+        "These three facts never change however often or however differently they are asked about."
+      ],
+      "impossible": [
+        "Moving the bed. It is clamped and it does not move, however it is attempted.",
+        "Making the bell-pull ring.",
+        "Finding anything unusual in the floor, walls, or ceiling."
+      ],
+      "discoverable": [
+        { "id": "bellpull", "trigger": "examines, pulls, or asks about the bell-pull", "reveal": "It is a dummy. It rings nothing, and it hangs directly over the pillow.", "sets": ["saw_dummy_bellpull"] },
+        { "id": "the_bed", "trigger": "examines or tries to move the bed", "reveal": "Clamped to the floor. It cannot be moved an inch.", "sets": ["saw_clamped_bed"] },
+        { "id": "ventilator", "trigger": "examines or asks about the ventilator", "reveal": "It vents not to the open air but into the next room.", "sets": ["saw_ventilator"] }
+      ],
+      "exits": [
+        { "id": "to_roylott_room", "when": "player asks to see Roylott's room", "to": "s6_roylotts_room" },
+        { "id": "to_watch", "when": "player arranges to keep watch here tonight", "requires_phase": "dusk", "to": "s7_watch" },
+        { "id": "back_outside", "when": "player goes back out to the grounds", "to": "s4_exterior" }
+      ]
+    },
+
+    {
+      "id": "s6_roylotts_room",
+      "title": "Dr Roylott's chamber",
+      "opens_with": "A camp bed, a shelf of technical books, a wooden chair, and a large iron safe. The room smells faintly of an animal.",
+      "returns_with": "The same bare room.",
+      "present": ["helen", "watson"],
+      "truths": [
+        "The safe is locked. Helen has no key. It cannot be forced.",
+        "A small saucer of milk stands on top of the safe, nearly empty.",
+        "A dog lash hangs on the bedstead, its end tied into a running noose.",
+        "There is no dog on the property and never has been.",
+        "The seat of the wooden chair shows marks of being stood upon."
+      ],
+      "impossible": ["Opening the safe by any means."],
+      "discoverable": [
+        { "id": "safe", "trigger": "examines the safe", "reveal": "Locked, heavy. Helen has never seen inside it.", "sets": ["saw_safe"] },
+        { "id": "milk", "trigger": "examines the saucer or the milk", "reveal": "A saucer of milk on the safe, and very little left in it.", "sets": ["saw_milk"] },
+        { "id": "lash", "trigger": "examines the lash", "reveal": "A dog lash, its end tied into a loop.", "sets": ["saw_lash"] },
+        { "id": "chair", "trigger": "examines the chair", "reveal": "Someone has been standing on the seat.", "sets": ["saw_chair_marks"] },
+        { "id": "no_dog", "trigger": "asks about a dog", "reveal": "There is no dog. There never has been." }
+      ],
+      "exits": [
+        { "id": "back_to_bedroom", "when": "player leaves this room", "to": "s5_bedroom" }
+      ],
+      "beats": [
+        { "at_turn": 7, "event": "A step creaks on the stair below — not hurried, but listening.", "sets": ["roylott_suspects"], "once": true }
+      ],
+      "on_fail": { "when": "roylott_suspects", "to": "e_discovered" }
+    },
+
+    {
+      "id": "s7_watch",
+      "title": "The dark",
+      "opens_with": "You and Watson sit in the black of the room, shutters open, lamp out. A light burns through the ventilator from next door, and then goes out.",
+      "returns_with": "The dark again.",
+      "requires_phase": "night",
+      "present": ["watson"],
+      "truths": [
+        "No light may be shown. Lighting the lamp ruins everything.",
+        "The waiting is long and genuinely uneventful. That is not a mistake.",
+        "When it comes there are seconds, not minutes."
+      ],
+      "impossible": [
+        "Leaving the room without abandoning the watch.",
+        "Warning Helen, who is already next door and must stay there."
+      ],
+      "discoverable": [],
+      "exits": [
+        { "id": "strike_true", "when": "player strikes at the bell-pull or the ventilator with a cane in the dark", "requires": "understands_room", "to": "e_win" },
+        { "id": "strike_blind", "when": "player lashes out without having understood the room", "to": "e_too_late" },
+        { "id": "light_lamp", "when": "player lights the lamp at any point", "to": "e_too_late" }
+      ],
+      "beats": [
+        { "at_turn": 2, "event": "A clock strikes twelve. Watson shifts and is still.", "once": true },
+        { "at_turn": 4, "event": "Something moves next door. A soft metallic sound, like a small door closing.", "once": true },
+        { "at_turn": 6, "event": "A gentle sound, like steam from a kettle held low. Then the whistle.", "once": true },
+        { "at_turn": 7, "event": "Something is on the bell-pull. Now.", "once": true },
+        { "at_turn": 9, "event": "It is over and you have missed it.", "goto": "e_too_late", "once": true }
+      ]
+    }
+  ],
+
+  "endings": [
+    {
+      "id": "e_win",
+      "title": "The speckled band",
+      "direction": "The cane strikes. Something recoils up the pull and through the ventilator. A moment later, from the next room, a scream. Roylott sits dead upright in the wooden chair with a band round his head — speckled, and slowly moving. Do not explain the mechanism in more than two sentences. Let the image carry it.",
+      "result": "win"
+    },
+    {
+      "id": "e_too_late",
+      "title": "Dawn",
+      "direction": "Whatever it was is gone before you understand it. In the morning Helen does not come down. Roylott is at breakfast and perfectly calm. Do not explain what was missed.",
+      "result": "loss"
+    },
+    {
+      "id": "e_discovered",
+      "title": "He knows",
+      "direction": "Roylott finds the marks of your search. Nothing happens that night, or the next, and you are not invited back. Some weeks later a notice appears in the paper. Do not explain what was missed.",
+      "result": "loss"
+    }
+  ],
+
+  "narrator": {
+    "voice": "Second person, past tense, Victorian register but plain and unornamented.",
+    "turn_length": "1-3 sentences",
+    "extra_rules": [
+      "Describe the bell-pull, the ventilator, and the bed in exactly the same tone as the dressing table and the carpet. No emphasis on what matters."
+    ],
+    "extra_refusals": [
+      "Any question about what happened in the original story."
+    ]
+  }
+}
