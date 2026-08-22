@@ -225,6 +225,14 @@
         { "id": "to_commons", "when": "player decides to look into the will, the estate, or the money", "to": "s3_commons" },
         { "id": "to_surrey", "when": "player sets off for Stoke Moran", "requires": "ready_to_travel", "to": "s4_exterior" }
       ],
+      "guarded_events": [
+        {
+          "id": "helen_departs",
+          "trigger": "player dismisses Helen, says goodbye, or otherwise signals the interview is over",
+          "requires": "heard_the_account",
+          "on_blocked": "Something keeps her a moment longer — she hesitates at the door, or Watson asks one more question, or she simply isn't ready to leave yet. She does not actually go."
+        }
+      ],
       "beats": [
         { "at_turn": 9, "event": "The door slams back and Roylott fills it.", "goto": "s2_intrusion", "once": true }
       ]

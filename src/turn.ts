@@ -4,8 +4,8 @@
 
 import type { CharacterSpec, Quest, SceneSpec } from "./validator.ts";
 import { evaluateExpression, type ExprContext } from "./expr.ts";
-import { buildPrompt, type SessionState, type TurnRecord } from "./prompt.ts";
-import type { ModelAdapter } from "./models/index.ts";
+import { buildPromptParts, type SessionState, type TurnRecord } from "./prompt.ts";
+import { selectModel, type ModelAdapter, type ModelEnv } from "./models/index.ts";
 import {
   commitTurn,
   loadQuestByVersion,
@@ -26,6 +26,7 @@ export interface DispositionChange {
 export interface ModelTurnResponse {
   narration: string;
   exit_id: string | null;
+  guarded_event_id: string | null;
   discovered: string[];
   flags_set: string[];
   disposition_changes: DispositionChange[];
@@ -68,6 +69,16 @@ function parseModelResponse(text: string): ModelTurnResponse {
   if (obj.exit_id !== null && typeof obj.exit_id !== "string") {
     throw new Error("'exit_id' must be a string or null");
   }
+  // A missing key (rather than an explicit null) is tolerated — this field
+  // is new, and a model that simply omits it means "nothing guarded fired,"
+  // same as null; only a present-but-wrong-typed value is rejected.
+  if (
+    obj.guarded_event_id !== undefined &&
+    obj.guarded_event_id !== null &&
+    typeof obj.guarded_event_id !== "string"
+  ) {
+    throw new Error("'guarded_event_id' must be a string or null");
+  }
   if (!Array.isArray(obj.discovered) || !obj.discovered.every((x) => typeof x === "string")) {
     throw new Error("'discovered' must be an array of strings");
   }
@@ -95,6 +106,7 @@ function parseModelResponse(text: string): ModelTurnResponse {
   return {
     narration: obj.narration,
     exit_id: obj.exit_id as string | null,
+    guarded_event_id: (obj.guarded_event_id ?? null) as string | null,
     discovered: obj.discovered as string[],
     flags_set: obj.flags_set as string[],
     disposition_changes: dispositionChanges,
@@ -147,6 +159,21 @@ function validateTurnResponse(
     }
   }
 
+  if (response.guarded_event_id !== null) {
+    const guardedEvent = (scene.guarded_events ?? []).find((g) => g.id === response.guarded_event_id);
+    if (!guardedEvent) {
+      errors.push(`guarded_event_id '${response.guarded_event_id}' is not a legal guarded_events id of scene '${scene.id}'`);
+    } else if (guardedEvent.requires && !evaluateExpression(guardedEvent.requires, ctx)) {
+      // The on_blocked text is embedded directly in the error, since a
+      // rejected turn's errors are exactly what gets fed back on retry —
+      // this is how the model gets steered toward narrating the block
+      // gracefully instead of just failing again.
+      errors.push(
+        `guarded_event '${guardedEvent.id}' requires '${guardedEvent.requires}', which is not currently satisfied. Narrate it like this instead: ${guardedEvent.on_blocked}`
+      );
+    }
+  }
+
   for (const discoveredId of response.discovered) {
     const discoverable = (scene.discoverable ?? []).find((d) => d.id === discoveredId);
     if (!discoverable) {
@@ -182,33 +209,41 @@ function validateTurnResponse(
 // ---- model attempt (parse + validate one completion) ----
 
 interface Attempt {
+  /** Logged verbatim to turn_logs.prompt — both roles, clearly labeled, for full debugging visibility. */
   promptSent: string;
   rawText: string;
   parsed: ModelTurnResponse | null;
   validation: TurnValidationResult;
   inputTokens?: number;
   outputTokens?: number;
-  latencyMs?: number;
+  /** Just the model.complete() call. */
+  modelCallMs: number;
+  /** Just parseModelResponse + validateTurnResponse, excluding the network call. */
+  validationMs: number;
 }
 
 async function attemptTurn(
   model: ModelAdapter,
-  basePrompt: string,
+  systemPrompt: string,
+  baseUser: string,
   priorErrors: string[] | null,
   quest: Quest,
   scene: SceneSpec,
   session: Session
 ): Promise<Attempt> {
-  const promptSent = priorErrors
-    ? `${basePrompt}\n\n---\n\nYour previous response was rejected for these reasons: ${priorErrors.join(
+  // system stays stable across a retry — only the user turn grows, with the
+  // rejection reason attached to what the model is actually responding to.
+  const userSent = priorErrors
+    ? `${baseUser}\n\n---\n\nYour previous response was rejected for these reasons: ${priorErrors.join(
         "; "
       )}\n\nReturn corrected JSON only, following the output contract exactly. No prose, no code fences.`
-    : basePrompt;
+    : baseUser;
 
-  const start = Date.now();
-  const { text, inputTokens, outputTokens } = await model.complete("", promptSent);
-  const latencyMs = Date.now() - start;
+  const modelCallStart = Date.now();
+  const { text, inputTokens, outputTokens } = await model.complete(systemPrompt, userSent);
+  const modelCallMs = Date.now() - modelCallStart;
 
+  const validationStart = Date.now();
   let parsed: ModelTurnResponse | null = null;
   let errors: string[] = [];
   try {
@@ -220,15 +255,17 @@ async function attemptTurn(
   if (parsed) {
     errors = errors.concat(validateTurnResponse(parsed, quest, scene, session));
   }
+  const validationMs = Date.now() - validationStart;
 
   return {
-    promptSent,
+    promptSent: `[SYSTEM]\n${systemPrompt}\n\n[USER]\n${userSent}`,
     rawText: text,
     parsed,
     validation: { valid: errors.length === 0, errors },
     inputTokens,
     outputTokens,
-    latencyMs,
+    modelCallMs,
+    validationMs,
   };
 }
 
@@ -370,17 +407,28 @@ function computeNextState(
 
 export async function processTurn(params: {
   client: DbClient;
-  model: ModelAdapter;
   sessionId: string;
   playerInput: string;
+  /** Direct adapter override — mainly for scripts/tests driving a scripted fake model. Takes priority over modelEnv. */
+  model?: ModelAdapter;
+  /** Used to build the adapter from the session's chosen model_name (falling back to modelEnv.MODEL_NAME) when `model` isn't given directly. */
+  modelEnv?: ModelEnv;
 }): Promise<TurnResult> {
-  const { client, model, sessionId, playerInput } = params;
+  const { client, sessionId, playerInput } = params;
 
   const session = await loadSession(client, sessionId);
   if (!session) throw new Error(`No session found with id '${sessionId}'`);
   if (session.status !== "active") {
     throw new Error(`Session '${sessionId}' is already '${session.status}' — no further turns accepted`);
   }
+
+  let resolvedModel = params.model;
+  if (!resolvedModel) {
+    if (!params.modelEnv) throw new Error("processTurn requires either `model` or `modelEnv`");
+    const modelName = session.model_name ?? params.modelEnv.MODEL_NAME;
+    resolvedModel = selectModel({ ...params.modelEnv, MODEL_NAME: modelName });
+  }
+  const model = resolvedModel;
 
   const questRow = await loadQuestByVersion(client, session.quest_id, session.quest_version);
   if (!questRow) throw new Error(`Quest '${session.quest_id}' v${session.quest_version} not found`);
@@ -396,46 +444,55 @@ export async function processTurn(params: {
     characters: session.characters,
     invented: session.invented,
   };
-  const basePrompt = buildPrompt(quest, sessionState, session.transcript, playerInput);
+  const { system: systemPrompt, user: baseUser } = buildPromptParts(quest, sessionState, session.transcript, playerInput);
 
   const turnIndex = session.transcript.length;
+  const turnStart = Date.now();
 
-  const attempt1 = await attemptTurn(model, basePrompt, null, quest, scene, session);
-  await logTurn(client, {
-    session_id: sessionId,
-    turn_index: turnIndex,
-    player_input: playerInput,
-    prompt: attempt1.promptSent,
-    raw_response: attempt1.rawText,
-    parsed: attempt1.parsed,
-    validation: attempt1.validation,
-    model: model.name,
-    input_tokens: attempt1.inputTokens,
-    output_tokens: attempt1.outputTokens,
-    latency_ms: attempt1.latencyMs,
-  });
+  const attempts: Attempt[] = [];
+  attempts.push(await attemptTurn(model, systemPrompt, baseUser, null, quest, scene, session));
 
-  let final = attempt1;
-  if (!attempt1.validation.valid) {
-    const attempt2 = await attemptTurn(model, basePrompt, attempt1.validation.errors, quest, scene, session);
-    await logTurn(client, {
-      session_id: sessionId,
-      turn_index: turnIndex,
-      player_input: playerInput,
-      prompt: attempt2.promptSent,
-      raw_response: attempt2.rawText,
-      parsed: attempt2.parsed,
-      validation: attempt2.validation,
-      model: model.name,
-      input_tokens: attempt2.inputTokens,
-      output_tokens: attempt2.outputTokens,
-      latency_ms: attempt2.latencyMs,
-    });
+  let final = attempts[0]!;
+  if (!final.validation.valid) {
+    const attempt2 = await attemptTurn(model, systemPrompt, baseUser, final.validation.errors, quest, scene, session);
+    attempts.push(attempt2);
     final = attempt2;
+  }
+
+  // Aggregates are only fully known once every attempt for this turn is in —
+  // computed once, then written identically onto every row for this
+  // turn_index, so any row answers "how long did this turn actually take."
+  const modelCallMs = attempts.reduce((sum, a) => sum + a.modelCallMs, 0);
+  const validationMs = attempts.reduce((sum, a) => sum + a.validationMs, 0);
+  const modelCallCount = attempts.length;
+
+  async function logAllAttempts(dbCommitMs: number) {
+    const totalMs = Date.now() - turnStart;
+    for (const attempt of attempts) {
+      await logTurn(client, {
+        session_id: sessionId,
+        turn_index: turnIndex,
+        player_input: playerInput,
+        prompt: attempt.promptSent,
+        raw_response: attempt.rawText,
+        parsed: attempt.parsed,
+        validation: attempt.validation,
+        model: model.name,
+        input_tokens: attempt.inputTokens,
+        output_tokens: attempt.outputTokens,
+        latency_ms: attempt.modelCallMs,
+        model_call_ms: modelCallMs,
+        validation_ms: validationMs,
+        db_commit_ms: dbCommitMs,
+        total_ms: totalMs,
+        model_call_count: modelCallCount,
+      });
+    }
   }
 
   if (!final.validation.valid || !final.parsed) {
     // Second failure: commit nothing, return a null-exit fallback.
+    await logAllAttempts(0);
     return {
       narration: FALLBACK_NARRATION,
       status: session.status,
@@ -447,6 +504,7 @@ export async function processTurn(params: {
   const response = final.parsed;
   const next = computeNextState(quest, session, scene, response, playerInput);
 
+  const commitStart = Date.now();
   const updatedSession = await commitTurn(client, sessionId, {
     current_scene: next.current_scene,
     phase: next.phase,
@@ -459,6 +517,9 @@ export async function processTurn(params: {
     status: next.status,
     ending_id: next.ending_id,
   });
+  const dbCommitMs = Date.now() - commitStart;
+
+  await logAllAttempts(dbCommitMs);
 
   const endingSpec = next.ending_id ? quest.endings.find((e) => e.id === next.ending_id) : undefined;
 

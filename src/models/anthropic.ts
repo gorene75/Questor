@@ -24,7 +24,11 @@ export function createAnthropicAdapter(apiKey: string, model: string): ModelAdap
         },
         body: JSON.stringify({
           model,
-          max_tokens: 1024,
+          // A 1-3 sentence narration plus the compact JSON turn contract
+          // realistically needs ~200-400 tokens; 1024 was a lot of unused
+          // ceiling. Not a fix for the retry-doubling (that's the system/
+          // user split), just trims worst-case cost/latency.
+          max_tokens: 500,
           system,
           messages: [{ role: "user", content: user }],
         }),

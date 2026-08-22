@@ -57,7 +57,6 @@ const fakeAi: WorkersAiBinding = {
 };
 
 const model = selectModel({
-  MODEL_PROVIDER: "workersai",
   MODEL_NAME: "@cf/scripted/fake-for-testing",
   AI: fakeAi,
 });

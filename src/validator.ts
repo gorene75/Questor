@@ -57,6 +57,13 @@ export interface OnFailSpec {
   to: string;
 }
 
+export interface GuardedEventSpec {
+  id: string;
+  trigger: string;
+  requires?: string;
+  on_blocked: string;
+}
+
 export interface SceneSpec {
   id: string;
   title: string;
@@ -69,6 +76,7 @@ export interface SceneSpec {
   impossible: string[];
   discoverable: DiscoverableSpec[];
   exits: ExitSpec[];
+  guarded_events?: GuardedEventSpec[];
   beats?: BeatSpec[];
   on_fail?: OnFailSpec;
 }
@@ -330,6 +338,13 @@ export function validateQuest(quest: Quest): ValidationResult {
       }
     }
 
+    // guarded_events — same gating mechanism as exits, no scene transition of their own
+    for (const ge of scene.guarded_events ?? []) {
+      if (ge.requires) {
+        checkGatingExpression(ge.requires, `guarded_event '${ge.id}' (scene '${scene.id}') requires`);
+      }
+    }
+
     // exits
     for (const exit of scene.exits ?? []) {
       if (exit.requires) {
@@ -445,6 +460,27 @@ export function validateQuest(quest: Quest): ValidationResult {
           );
         }
       }
+    }
+  }
+
+  // guarded events: a scene with a present character whose discoverables set
+  // a flag required elsewhere, but the scene has no guarded_events at all —
+  // that character can be narrated out of the story with nothing gating it.
+  // This is a heuristic, not a precise character-attribution check: the
+  // schema has no field tying a discoverable to which present character
+  // reveals it, so this flags at the scene level and expects author judgment
+  // (e.g. a discoverable that's a physical object rather than something a
+  // character says isn't actually at risk, even if it sets a load-bearing flag).
+  for (const scene of scenes) {
+    if ((scene.guarded_events ?? []).length > 0) continue;
+    const loadBearingDiscoverable = (scene.discoverable ?? []).find((d) =>
+      (d.sets ?? []).some((f) => gatingFlagUsages.has(f))
+    );
+    if (!loadBearingDiscoverable) continue;
+    for (const charId of scene.present ?? []) {
+      warnings.push(
+        `Scene '${scene.id}' has character '${charId}' present and a discoverable ('${loadBearingDiscoverable.id}') that sets a flag required elsewhere, but no guarded_events — the character could be narrated as leaving/dismissed with nothing gating it`
+      );
     }
   }
 

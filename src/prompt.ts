@@ -1,7 +1,7 @@
 // Pure prompt assembly. No I/O, no network — the template text is compiled in
 // via promptTemplate.ts (generated from prompts/play-agent.md), not read from disk.
 
-import type { CharacterSpec, DiscoverableSpec, ExitSpec, Quest } from "./validator.ts";
+import type { CharacterSpec, DiscoverableSpec, ExitSpec, GuardedEventSpec, Quest } from "./validator.ts";
 import { evaluateExpression, type ExprContext } from "./expr.ts";
 import { PLAY_AGENT_TEMPLATE } from "./promptTemplate.ts";
 
@@ -101,12 +101,23 @@ function describeDiscoverable(d: DiscoverableSpec, ctx: ExprContext): string {
   return `- ${d.id} (${status}): trigger "${d.trigger}" — requires '${d.requires}' — reveal withheld until then`;
 }
 
+function describeGuardedEvent(ge: GuardedEventSpec, ctx: ExprContext): string {
+  const available = ge.requires ? evaluateExpression(ge.requires, ctx) : true;
+  const status = available ? "available" : "blocked";
+
+  if (available) {
+    return `- ${ge.id} (${status}): trigger "${ge.trigger}"`;
+  }
+  return `- ${ge.id} (${status}): trigger "${ge.trigger}" — requires '${ge.requires}' — if this comes up, narrate it as: ${ge.on_blocked}`;
+}
+
 function buildScene(quest: Quest, session: SessionState): string {
   const scene = findScene(quest, session.current_scene);
   const ctx = buildExprContext(quest, session);
 
   const exitLines = (scene.exits ?? []).map((exit) => describeExit(exit, ctx, session.phase));
   const discoverableLines = (scene.discoverable ?? []).map((d) => describeDiscoverable(d, ctx));
+  const guardedEventLines = (scene.guarded_events ?? []).map((ge) => describeGuardedEvent(ge, ctx));
 
   return [
     `Current phase: ${session.phase}`,
@@ -122,6 +133,9 @@ function buildScene(quest: Quest, session: SessionState): string {
     "",
     "Exits:",
     joinLines(exitLines, "(none)"),
+    "",
+    "Guarded events:",
+    joinLines(guardedEventLines, "(none)"),
   ].join("\n");
 }
 
@@ -186,11 +200,11 @@ function fillPlaceholder(template: string, name: string, content: string): strin
   return template.replace(placeholderLine, () => content);
 }
 
-export function buildPrompt(
+function fillTemplate(
   quest: Quest,
   session: SessionState,
   recentHistory: TurnRecord[],
-  playerInput: string
+  inputSectionContent: string
 ): string {
   const sections: Record<string, string> = {
     FRAME: buildFrame(quest),
@@ -199,7 +213,7 @@ export function buildPrompt(
     CHARACTERS: buildCharacters(quest, session),
     INVENTED: buildInvented(session),
     HISTORY: buildHistory(recentHistory),
-    INPUT: playerInput,
+    INPUT: inputSectionContent,
   };
 
   let output = PLAY_AGENT_TEMPLATE;
@@ -207,4 +221,41 @@ export function buildPrompt(
     output = fillPlaceholder(output, name, content);
   }
   return output;
+}
+
+/**
+ * Single combined string, matching BUILD.md's documented prompt.ts
+ * signature — every placeholder filled, including the player's literal
+ * input. Kept for eyeballing/debugging (scripts/test-prompt.ts) and
+ * backward compatibility; the real model call uses buildPromptParts below,
+ * which keeps the player's input out of the instructional block entirely.
+ */
+export function buildPrompt(
+  quest: Quest,
+  session: SessionState,
+  recentHistory: TurnRecord[],
+  playerInput: string
+): string {
+  return fillTemplate(quest, session, recentHistory, playerInput);
+}
+
+/**
+ * Splits the prompt into system (frame/canon/scene/characters/invented/
+ * history plus all instructions) and user (just the player's raw input).
+ * Sending the whole assembled prompt as a single user-role message — as
+ * buildPrompt's output would be, passed through unsplit — reads to a model
+ * trained on the system/user convention as a briefing to acknowledge, not a
+ * question to answer: live testing on Claude Haiku showed a 100% first-
+ * attempt failure rate ("I understand this system prompt completely...
+ * what quest are we running?") purely from that structural mismatch, with
+ * every turn needing a second call to actually respond.
+ */
+export function buildPromptParts(
+  quest: Quest,
+  session: SessionState,
+  recentHistory: TurnRecord[],
+  playerInput: string
+): { system: string; user: string } {
+  const system = fillTemplate(quest, session, recentHistory, "(sent separately as the next message — respond to it directly)");
+  return { system, user: playerInput };
 }

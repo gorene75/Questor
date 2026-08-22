@@ -43,6 +43,8 @@ export interface Session {
   fired_beats: string[];
   status: SessionStatus;
   ending_id: string | null;
+  /** Model chosen for this session at creation, or null to use the env/vars default at play time. */
+  model_name: string | null;
   created_at: string;
   updated_at: string;
 }
@@ -86,7 +88,7 @@ export async function loadQuestByVersion(client: DbClient, questId: string, vers
   return data as QuestRow | null;
 }
 
-export async function createSession(client: DbClient, questId: string): Promise<Session> {
+export async function createSession(client: DbClient, questId: string, modelName: string | null = null): Promise<Session> {
   const questRow = await loadQuest(client, questId);
   if (!questRow) {
     throw new Error(`No quest found with id '${questId}' — load it into the quests table first`);
@@ -112,6 +114,7 @@ export async function createSession(client: DbClient, questId: string): Promise<
       fired_beats: [],
       status: "active",
       ending_id: null,
+      model_name: modelName,
     })
     .select()
     .single();
@@ -183,7 +186,16 @@ export interface TurnLogInput {
   model: string;
   input_tokens?: number;
   output_tokens?: number;
+  /** This attempt's own model.complete() duration. */
   latency_ms?: number;
+  /** Everything below is a per-turn aggregate, not per-attempt — identical
+   * across every row sharing a turn_index, since it's only fully known once
+   * the whole turn (all retries) has resolved. */
+  model_call_ms?: number;
+  validation_ms?: number;
+  db_commit_ms?: number;
+  total_ms?: number;
+  model_call_count?: number;
 }
 
 export interface TurnLogRow extends TurnLogInput {
@@ -210,6 +222,11 @@ export async function logTurn(client: DbClient, input: TurnLogInput): Promise<vo
     input_tokens: input.input_tokens,
     output_tokens: input.output_tokens,
     latency_ms: input.latency_ms,
+    model_call_ms: input.model_call_ms,
+    validation_ms: input.validation_ms,
+    db_commit_ms: input.db_commit_ms,
+    total_ms: input.total_ms,
+    model_call_count: input.model_call_count,
   });
 
   if (error) throw new Error(`Failed to log turn for session '${input.session_id}': ${error.message}`);

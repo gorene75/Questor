@@ -6,11 +6,10 @@ const system =
   '{"ok": true, "note": "<a short string of your choosing>"}';
 const user = "Confirm the adapter round-trip is working.";
 
-console.log(`MODEL_PROVIDER=${process.env.MODEL_PROVIDER} MODEL_NAME=${process.env.MODEL_NAME}`);
+console.log(`MODEL_NAME=${process.env.MODEL_NAME}`);
 
-console.log("\n--- live call via selectModel() (anthropic, from .env) ---");
+console.log("\n--- live call via selectModel() (provider inferred from MODEL_NAME, from .env) ---");
 const model = selectModel({
-  MODEL_PROVIDER: process.env.MODEL_PROVIDER ?? "",
   MODEL_NAME: process.env.MODEL_NAME ?? "",
   ANTHROPIC_API_KEY: process.env.ANTHROPIC_API_KEY,
 });
@@ -34,7 +33,6 @@ const fakeAi: WorkersAiBinding = {
   },
 };
 const workersModel = selectModel({
-  MODEL_PROVIDER: "workersai",
   MODEL_NAME: "@cf/meta/llama-3.1-8b-instruct",
   AI: fakeAi,
 });

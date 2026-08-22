@@ -203,6 +203,15 @@ Supported: `AND`, `OR`, `NOT`, parentheses, flag names, and `character.helen >= 
     }
   ],
 
+  "guarded_events": [
+    {
+      "id": "helen_departs",
+      "trigger": "player dismisses Helen, says goodbye, or otherwise signals the interview is over",
+      "requires": "heard_the_account",
+      "on_blocked": "Something keeps her a moment longer — she hesitates at the door, or Watson asks one more question, or she simply isn't ready to leave yet. She does not actually go."
+    }
+  ],
+
   "beats": [
     { "at_turn": 8, "event": "Roylott arrives.", "goto": "s3_intrusion", "once": true },
     { "at_turn": 12, "event": "A step creaks on the stair below.", "sets": ["overstayed"], "once": true }
@@ -217,6 +226,8 @@ Supported: `AND`, `OR`, `NOT`, parentheses, flag names, and `character.helen >= 
 **`requires` on a discoverable is the character gate.** This is where the interior mechanic pays off: the locked door is not available at `guarded`, no matter how the player phrases the question. Helen is not withholding strategically — she is frightened, and frightened people do not lead with the worst part.
 
 **`impossible` is separate from `truths`** because it is the list the model most needs in front of it. The bed does not move. The window does not open.
+
+**`guarded_events` is the same mechanism as `exits`, extended to narrated consequences that aren't a scene transition.** v1's `to_surrey` bug was fixed by putting real gates on literal exits — but a player can also narrate a character *out* of the story without ever taking an exit ("goodbye", "I dismiss her"), and nothing about that requires the engine's permission unless something explicitly gates it. If Helen leaves before `heard_the_account` is set, `ready_to_travel` can never become true and the quest soft-locks with no path to any ending, even though every exit and discoverable individually still validates fine — the failure is a narrated event nobody enforced, not a broken gate. `guarded_events` closes that: each entry names a `trigger` an author anticipates (a dismissal, a threat, an ending-adjacent line), a `requires` condition, and an `on_blocked` line telling the narrator how to hold the line gracefully when it fires too early. Same enforcement posture as everything else in this file — the engine decides, the model narrates within the decision.
 
 **A beat may `sets` flags in addition to (or instead of) `goto`.** A time-based consequence — being caught searching, missing a window — is a deterministic threshold on `scene_turn_count`, not something the model is trusted to notice on its own. `on_fail` is evaluated immediately after beats fire each turn, so a beat that sets the flag named in `on_fail.when` ends the scene that same turn, without needing its own `goto`.
 
@@ -260,6 +271,7 @@ What the model must return. The engine parses this and rejects anything malforme
 {
   "narration": "1-3 sentences.",
   "exit_id": "legal exit id, or null",
+  "guarded_event_id": "legal guarded_events id, or null",
   "discovered": ["discoverable ids triggered this turn"],
   "flags_set": ["flags to raise"],
   "disposition_changes": [
@@ -274,12 +286,15 @@ What the model must return. The engine parses this and rejects anything malforme
 
 1. `exit_id` is null or is a legal exit of the current scene
 2. That exit's `requires` and `requires_phase` are satisfied
-3. Each `discovered` id belongs to the current scene and its `requires` is met
-4. Each flag in `flags_set` is declared
-5. `disposition_changes` are clamped to one step, within floor and ceiling
-6. `invented` is appended to session state and fed back in every subsequent turn
+3. `guarded_event_id` is null or is a legal `guarded_events` id of the current scene, and its `requires` is satisfied — checked exactly like `exit_id`, but it names a narrated consequence rather than a scene transition, so satisfying it doesn't change `current_scene` on its own
+4. Each `discovered` id belongs to the current scene and its `requires` is met
+5. Each flag in `flags_set` is declared
+6. `disposition_changes` are clamped to one step, within floor and ceiling
+7. `invented` is appended to session state and fed back in every subsequent turn
 
 Any failure: retry once with the error appended. On second failure, commit nothing, return a null-exit fallback narration, and log it. The log is how you tell a bad model from a bad file.
+
+**When a `guarded_event_id` fails validation, the retry is seeded with that event's `on_blocked` text**, not just a bare rejection — the point isn't to make the model guess its way to a legal response, it's to get a *narratively graceful* one on the first retry: the character hesitates, gets interrupted, isn't ready, rather than the turn just silently failing twice and falling back to a null-exit non-answer.
 
 ---
 
@@ -305,5 +320,6 @@ Runs before a quest is playable. Phase 2's builder agent calls this in a loop, s
 - Character with `ceiling` above `starts_at` but no `moves_toward` entries
 - Scene with no exits and no `on_fail`
 - Ending unreachable
+- A scene has a character present whose discoverables set a flag required elsewhere (by a `requires` or `derived` expression anywhere in the quest), but the scene has no `guarded_events` at all *(this is the s1 Helen-departure bug — a character can be narrated out of the story with nothing gating it, silently soft-locking the quest)*
 
 The win-path check is the one that matters most. It is what a human author cannot reliably do by eye, and it is exactly the bug I shipped in v1.

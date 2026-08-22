@@ -3,14 +3,13 @@
 // match a file falls through to fetch() below.
 
 import { createDbClient, createSession, loadQuestByVersion, loadSession } from "./db.ts";
-import { selectModel, type WorkersAiBinding } from "./models/index.ts";
+import type { WorkersAiBinding } from "./models/index.ts";
 import { processTurn } from "./turn.ts";
 
 interface Env {
   SUPABASE_URL: string;
   SUPABASE_SERVICE_KEY: string;
   ANTHROPIC_API_KEY?: string;
-  MODEL_PROVIDER: string;
   MODEL_NAME: string;
   AI?: WorkersAiBinding;
 }
@@ -30,13 +29,18 @@ function errorStatus(message: string): number {
 
 async function handleCreateSession(request: Request, env: Env): Promise<Response> {
   const body = await request.json().catch(() => null);
-  const questId = body && typeof body === "object" ? (body as Record<string, unknown>).quest_id : undefined;
+  const record = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
+  const questId = record?.quest_id;
+  const modelName = record?.model_name;
   if (typeof questId !== "string") {
-    return json({ error: "Expected JSON body { quest_id: string }" }, 400);
+    return json({ error: "Expected JSON body { quest_id: string, model_name?: string }" }, 400);
+  }
+  if (modelName !== undefined && typeof modelName !== "string") {
+    return json({ error: "model_name, if given, must be a string" }, 400);
   }
 
   const client = createDbClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY);
-  const session = await createSession(client, questId);
+  const session = await createSession(client, questId, modelName ?? null);
 
   const questRow = await loadQuestByVersion(client, session.quest_id, session.quest_version);
   const startScene = questRow?.graph.scenes.find((s) => s.id === session.current_scene);
@@ -54,14 +58,17 @@ async function handleTurn(request: Request, env: Env): Promise<Response> {
   }
 
   const client = createDbClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY);
-  const model = selectModel({
-    MODEL_PROVIDER: env.MODEL_PROVIDER,
+  // processTurn resolves the actual model per-session: session.model_name
+  // (chosen at creation) wins if set, otherwise it falls back to MODEL_NAME
+  // below. Provider is inferred from whichever model name ends up in play
+  // (see selectModel) — not a separate setting.
+  const modelEnv = {
     MODEL_NAME: env.MODEL_NAME,
     ANTHROPIC_API_KEY: env.ANTHROPIC_API_KEY,
     AI: env.AI,
-  });
+  };
 
-  const result = await processTurn({ client, model, sessionId, playerInput: input });
+  const result = await processTurn({ client, modelEnv, sessionId, playerInput: input });
 
   return json({
     narration: result.narration,

@@ -10,5 +10,7 @@ binding = "ASSETS"
 binding = "AI"
 
 [vars]
-MODEL_PROVIDER = "workersai"
+# Fallback default when a session doesn't choose its own model_name.
+# Provider is inferred from the model name itself (see src/models/index.ts) —
+# no separate provider setting.
 MODEL_NAME = "@cf/openai/gpt-oss-20b"

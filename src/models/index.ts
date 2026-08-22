@@ -22,27 +22,35 @@ export interface WorkersAiBinding {
 }
 
 export interface ModelEnv {
-  MODEL_PROVIDER: string;
   MODEL_NAME: string;
   ANTHROPIC_API_KEY?: string;
   AI?: WorkersAiBinding;
 }
 
+/**
+ * Workers AI model ids universally start with `@cf/`; Anthropic ids never
+ * do. This makes MODEL_NAME alone sufficient to pick a provider — no
+ * separate provider field needed, so a per-session model choice (which only
+ * has a model name to give) can route correctly without extra plumbing.
+ */
+function inferProvider(modelName: string): "anthropic" | "workersai" {
+  return modelName.startsWith("@cf/") ? "workersai" : "anthropic";
+}
+
 export function selectModel(env: ModelEnv): ModelAdapter {
-  switch (env.MODEL_PROVIDER) {
+  const provider = inferProvider(env.MODEL_NAME);
+  switch (provider) {
     case "anthropic": {
       if (!env.ANTHROPIC_API_KEY) {
-        throw new Error("ANTHROPIC_API_KEY is required when MODEL_PROVIDER=anthropic");
+        throw new Error(`ANTHROPIC_API_KEY is required to use model '${env.MODEL_NAME}'`);
       }
       return createAnthropicAdapter(env.ANTHROPIC_API_KEY, env.MODEL_NAME);
     }
     case "workersai": {
       if (!env.AI) {
-        throw new Error("AI binding is required when MODEL_PROVIDER=workersai");
+        throw new Error(`AI binding is required to use model '${env.MODEL_NAME}'`);
       }
       return createWorkersAiAdapter(env.AI, env.MODEL_NAME);
     }
-    default:
-      throw new Error(`Unknown MODEL_PROVIDER '${env.MODEL_PROVIDER}' (expected 'anthropic' or 'workersai')`);
   }
 }
