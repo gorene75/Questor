@@ -1,5 +1,7 @@
 node_modules/
-.dev.vars
 .env
-.wrangler/
+.dev.vars
 dist/
+.wrangler/
+.wrangler-dev.log
+.last-session

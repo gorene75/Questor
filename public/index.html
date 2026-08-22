@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>Questor</title>
+<style>
+  body { font-family: monospace; max-width: 640px; margin: 2rem auto; padding: 0 1rem; }
+  #messages { border: 1px solid #999; padding: 0.75rem; height: 60vh; overflow-y: auto; margin-bottom: 0.75rem; white-space: pre-wrap; }
+  .msg { margin-bottom: 0.75rem; }
+  .msg.player { color: #444; }
+  .msg.player::before { content: "> "; }
+  .msg.narrator::before { content: ""; }
+  .msg.refused { background: #fff3cd; }
+  .msg.refused::after { content: "  [refused: true]"; color: #a66; font-weight: bold; }
+  .msg.ending { font-weight: bold; }
+  form { display: flex; gap: 0.5rem; }
+  input[type="text"] { flex: 1; font-family: monospace; padding: 0.4rem; }
+  button { font-family: monospace; padding: 0.4rem 0.8rem; }
+</style>
+</head>
+<body>
+<h3>Questor</h3>
+<div id="messages"></div>
+<form id="input-form">
+  <input id="player-input" type="text" autocomplete="off" placeholder="What do you do?" />
+  <button type="submit">Send</button>
+</form>
+
+<script>
+const QUEST_ID = "speckled-band";
+let sessionId = null;
+let ended = false;
+
+const messagesEl = document.getElementById("messages");
+const formEl = document.getElementById("input-form");
+const inputEl = document.getElementById("player-input");
+
+function addMessage(text, kind) {
+  const div = document.createElement("div");
+  div.className = "msg " + kind;
+  div.textContent = text;
+  messagesEl.appendChild(div);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+async function start() {
+  inputEl.disabled = true;
+  const res = await fetch("/session", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ quest_id: QUEST_ID }),
+  });
+  const data = await res.json();
+  if (!res.ok) {
+    addMessage("Failed to start session: " + (data.error || res.status), "narrator");
+    return;
+  }
+  sessionId = data.session_id;
+  addMessage(data.narration, "narrator");
+  inputEl.disabled = false;
+  inputEl.focus();
+}
+
+formEl.addEventListener("submit", async (e) => {
+  e.preventDefault();
+  const text = inputEl.value.trim();
+  if (!text || !sessionId || ended) return;
+
+  addMessage(text, "player");
+  inputEl.value = "";
+  inputEl.disabled = true;
+
+  const res = await fetch("/turn", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ session_id: sessionId, input: text }),
+  });
+  const data = await res.json();
+
+  if (!res.ok) {
+    addMessage("Error: " + (data.error || res.status), "narrator");
+    inputEl.disabled = false;
+    return;
+  }
+
+  const kinds = ["narrator"];
+  if (data.refused) kinds.push("refused");
+  addMessage(data.narration, kinds.join(" "));
+
+  if (data.status !== "active") {
+    ended = true;
+    const title = data.ending ? data.ending.title : data.status;
+    addMessage("--- " + title + " (" + data.status + ") ---", "ending");
+  } else {
+    inputEl.disabled = false;
+    inputEl.focus();
+  }
+});
+
+start();
+</script>
+</body>
+</html>
