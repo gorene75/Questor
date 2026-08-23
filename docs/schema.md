@@ -18,6 +18,7 @@ The contract between three things: the file an author (or the builder agent) pro
   derived       — named boolean expressions over flags
   scenes        — places and what happens in them
   endings       — win and loss states
+  degradations  — named worse-but-still-playable states, fallen into instead of blocking or dead-ending
   narrator      — voice and per-quest overrides
 }
 ```
@@ -44,22 +45,76 @@ The contract between three things: the file an author (or the builder agent) pro
 
 ---
 
-## clock
+## world
 
-Time is a phase, not a flag. v1 gated the winning scene on a `dusk_reached` flag that nothing ever set, making the quest unwinnable. Phases make time explicit and validatable.
+*(v3 addition — optional; a quest without one just skips this guidance.)* Quest-wide and unchanging, injected into every prompt identically.
 
 ```json
 {
-  "phases": ["morning", "afternoon", "dusk", "night"],
-  "starts_at": "morning",
-  "advances_on": [
-    { "exit": "to_surrey", "to": "afternoon" },
-    { "turns_in_scene": 6, "scene": "s4_exterior", "to": "dusk" }
-  ]
+  "setting": "London, 1883. Late Victorian, gaslit, pre-telephone.",
+  "register": "Formal, restrained. People do not say what they feel directly.",
+  "physics": "realistic",
+  "supernatural": "none",
+  "absent": [
+    "Electric light, telephones, motor vehicles, photography as casual record",
+    "Modern medicine, antibiotics, forensics beyond the crude",
+    "Modern food, modern slang, modern social attitudes"
+  ],
+  "present": [
+    "Hansom cabs, telegrams, gas lamps, coal fires, servants",
+    "Revolvers, railways, the Underground, calling cards"
+  ],
+  "anachronism_response": "Do not refuse out of character. The thing simply does not exist and the world does not acknowledge the concept.",
+  "weirdness": 0
 }
 ```
 
-The clock only moves forward. Scenes and exits may require a phase via `requires_phase`. The engine advances the clock; the model never touches it.
+**`absent` is illustrative, never exhaustive.** It cannot enumerate every anachronism a player might reach for. It exists to give the model a *pattern* to generalize from — a handful of representative examples of the kind of thing that doesn't belong, so a request for something not literally on the list (an X-ray, a therapist, an instant photograph) still gets recognized as the same category. The validator warns below 3 entries, on the theory that a pattern needs more than one or two points to actually be a pattern.
+
+**`weirdness`**, 0-10, is the deliberate-fuzziness dial. At 0 the model stays strictly inside the frame; higher values are an authorial choice (dream sequence, comedy, surreal quest) that deliberately loosens how far it may invent beyond what's declared. Default 2 if unset.
+
+**`register` is distinct from `narrator.voice`.** Voice is how the narrator writes; register is how the people inside the world actually speak and carry themselves. They can differ — a plain, unornamented narrating voice can still describe a formally repressed cast.
+
+---
+
+## clock
+
+*(v3 rewrite.)* v1 gated the winning scene on a `dusk_reached` flag that nothing ever set, making the quest unwinnable — v2 fixed that with named phases and discrete `advances_on` triggers. But a conversation and a three-hour journey to Surrey both just "happened" — v2's phases were too coarse to mean anything beyond gating a handful of scenes. v3 tracks story-time in actual minutes, because time is quantifiable, unlike coherence.
+
+```json
+{
+  "starts_at": "1883-04-06T07:15:00",
+  "default_turn_cost_minutes": 5,
+  "phases": [
+    { "name": "morning", "until": "12:00" },
+    { "name": "afternoon", "until": "18:00" },
+    { "name": "dusk", "until": "20:30" },
+    { "name": "night", "until": "05:00" }
+  ],
+  "deadline": {
+    "at": "1883-04-07T03:00:00",
+    "meaning": "Whatever killed Julia comes for Helen.",
+    "on_reached": { "mode": "ending", "ending": "e_too_late" }
+  }
+}
+```
+
+**`starts_at` is a real ISO datetime, not a phase name.** It's naive story-time — never timezone-aware, since it's fictional, not a real-world instant.
+
+**`phases` are time-of-day ranges, not a flat ordered list.** Each phase runs from the *previous* phase's `until` to its own — circularly, so the last entry's `until` is implicitly the first entry's start. That's what lets `night` (until 05:00) span midnight without special-casing: its start is `dusk`'s `until` (20:30), and it hands off to `morning` at 05:00. `phase` is always *derived* from story-time; nothing stores it as an independently-authored value the way v2 did.
+
+**Exits and beats may declare `costs_minutes`.** `to_surrey` costing 180 and a beat's own `costs_minutes` are both authored, deterministic — the engine trusts them completely, no model estimate involved. For everything else (an examine, a question, ordinary conversation), the engine falls back to the model's own `minutes_elapsed` from the turn contract, clamped to a sane range, and falls back again to `default_turn_cost_minutes` if that's absent or nonsensical. **General principle: an author-declared cost always wins over a model estimate.**
+
+**`deadline` is the whole-quest backstop.** Once story-time reaches `at`, the engine forces `on_reached`. Optional: `max_turns` + `universal_endings` (below) already guarantee no single scene runs forever, so `deadline` is about the *quest's* overall clock, not a strict requirement for termination. For a quest built around a real deadline ("you have until dawn"), declare one; a quest without that framing can skip it.
+
+**`on_reached.mode` is a per-quest choice, not assumed behavior.** Hitting the deadline is not automatically fatal — the author decides what missing it costs:
+
+- `"ending"` forces the named `ending` outright. This is the higher-stakes choice, and it wins over `max_turns` if both would fire the same turn — an authored, quest-specific "time's up" moment beats a generic, unauthored safety net. Requires an `ending` field naming a declared ending or universal_ending.
+- `"degrade"` (the default when `mode` is omitted) applies a named `degradations` entry (below) and lets the story continue in a worse state instead of ending outright. Because the session stays active, `max_turns` keeps applying normally on every later turn — nothing else guarantees the session terminates once it's played past its own deadline. Requires a `degrade` field naming a declared degradation.
+
+Speckled Band uses `"ending"`: missing the deadline means Helen is dead by morning, and that is the correct stake for this quest's premise — not because `"ending"` is the mechanism's only mode, but because it's the authored choice for this quest specifically. A quest where "you ran out of time" should cost something short of the whole story would set `"degrade"` instead.
+
+The clock only moves forward — minutes never subtract. Scenes and exits may still require a phase via `requires_phase`, checked against the *derived* phase; every declared phase is trivially reachable just by enough time passing, so there's no separate reachability analysis the way v2's `advances_on` needed. The engine advances the clock; the model never touches it, and is told the current time and phase each turn (as a plain `HH:MM`, never the raw machine datetime) so narration stays consistent with it.
 
 ---
 
@@ -199,7 +254,8 @@ Supported: `AND`, `OR`, `NOT`, parentheses, flag names, and `character.helen >= 
       "when": "player sets off for Stoke Moran",
       "requires": "heard_the_account",
       "to": "s4_exterior",
-      "sets": []
+      "sets": [],
+      "costs_minutes": 180
     }
   ],
 
@@ -208,16 +264,30 @@ Supported: `AND`, `OR`, `NOT`, parentheses, flag names, and `character.helen >= 
       "id": "helen_departs",
       "trigger": "player dismisses Helen, says goodbye, or otherwise signals the interview is over",
       "requires": "heard_the_account",
-      "on_blocked": "Something keeps her a moment longer — she hesitates at the door, or Watson asks one more question, or she simply isn't ready to leave yet. She does not actually go."
+      "on_blocked": "Something keeps her a moment longer — she hesitates at the door, or Watson asks one more question, or she simply isn't ready to leave yet. She does not actually go.",
+      "on_allowed": { "degrade": "no_account", "goto": null }
     }
   ],
 
+  "pressure": {
+    "idle_after_turns": 3,
+    "escalation": [
+      "Watson glances at the clock on the mantelpiece.",
+      "Helen says quietly that she must be home before her stepfather notices she has gone.",
+      "Helen stands and reaches for her gloves. She is running out of time."
+    ],
+    "on_exhausted": "helen_departs"
+  },
+
   "beats": [
-    { "at_turn": 8, "event": "Roylott arrives.", "goto": "s3_intrusion", "once": true },
+    { "at_turn": 10, "event": "Roylott arrives.", "goto": "s3_intrusion", "once": true },
     { "at_turn": 12, "event": "A step creaks on the stair below.", "sets": ["overstayed"], "once": true }
   ],
 
-  "on_fail": { "when": "condition", "to": "ending id" }
+  "on_fail": { "when": "condition", "to": "ending id" },
+
+  "max_turns": 25,
+  "on_exhausted": "scene id or ending id"
 }
 ```
 
@@ -229,7 +299,44 @@ Supported: `AND`, `OR`, `NOT`, parentheses, flag names, and `character.helen >= 
 
 **`guarded_events` is the same mechanism as `exits`, extended to narrated consequences that aren't a scene transition.** v1's `to_surrey` bug was fixed by putting real gates on literal exits — but a player can also narrate a character *out* of the story without ever taking an exit ("goodbye", "I dismiss her"), and nothing about that requires the engine's permission unless something explicitly gates it. If Helen leaves before `heard_the_account` is set, `ready_to_travel` can never become true and the quest soft-locks with no path to any ending, even though every exit and discoverable individually still validates fine — the failure is a narrated event nobody enforced, not a broken gate. `guarded_events` closes that: each entry names a `trigger` an author anticipates (a dismissal, a threat, an ending-adjacent line), a `requires` condition, and an `on_blocked` line telling the narrator how to hold the line gracefully when it fires too early. Same enforcement posture as everything else in this file — the engine decides, the model narrates within the decision.
 
+**`on_allowed` is optional, and only matters once `requires` fails twice in the same turn.** The retry flow is unchanged: first failure gets `on_blocked` fed back, hoping for a graceful self-correction. If the model insists a second time, a guarded event with no `on_allowed` still dead-ends exactly as before — commit nothing, fall back to a null-exit narration. A guarded event that declares `on_allowed.degrade`, though, is *let through* instead: the model's own narration commits, the named `degradations` entry (below) is applied, and — since the event still isn't a scene transition on its own — `on_allowed.goto` optionally forces one (`null`, as above, means the story stays in the current scene). This is the mechanism that turns "the model won't stop insisting on something the quest can't allow" from a dead end into a worse-but-still-playable branch.
+
+**`pressure` is what old text adventures never had: a third response to a drifting player, besides allow-it or refuse-it.** A turn counts as *idle* when it sets no flag, triggers no discoverable, takes no exit, and fires no guarded event — the player is present but not moving anything forward. `idle_after_turns` is both the threshold for the first escalation line and the spacing between every later one: tier *k* (1-indexed) shows `escalation[k-1]` once idle turns reach `idle_after_turns * k`. Three idle turns and the world nudges (Watson checks the time). Six and it nudges harder (Helen names the reason she has to go). Once idle turns reach `idle_after_turns * escalation.length` — the last tier, which the last line is written for — escalation is exhausted and the engine forces `on_exhausted` (a `guarded_events` id declared on this same scene) through, with no further chance for the model to head it off. It's resolved exactly like a model-insisted `on_allowed.degrade`, except the check that decides whether to actually apply the degrade — is the event's `requires` still unmet? — happens fresh at the moment of forcing: a player who satisfied it and simply lingered afterward gets waved on cleanly, not punished for something they already did. Nobody is ever told they can't do something; the story just keeps applying gravity, and this is also what stops the old "Watson is two minutes gone" loop — idle turns cannot accumulate forever, because eventually the opportunity genuinely closes.
+
+**Check `idle_after_turns * escalation.length` against every `beat.at_turn` (and `max_turns`) in the same scene.** Idle turns can never outrun the scene's own turn count — every idle turn is also a scene turn — so if a beat's threshold falls at or before pressure's exhaustion point, the beat always fires first and pressure's hard exhaustion never gets reached at all, no matter how the player plays. The nudges still show (they're keyed to the same, always-reachable count), but the actual `on_exhausted` force becomes dead code. Above, exhaustion lands at turn 9 (`idle_after_turns` 3 × 3 lines) and the first beat is pushed to 10 specifically so it doesn't preempt it.
+
 **A beat may `sets` flags in addition to (or instead of) `goto`.** A time-based consequence — being caught searching, missing a window — is a deterministic threshold on `scene_turn_count`, not something the model is trusted to notice on its own. `on_fail` is evaluated immediately after beats fire each turn, so a beat that sets the flag named in `on_fail.when` ends the scene that same turn, without needing its own `goto`.
+
+**`max_turns` is a v3 addition — a termination backstop every scene has, default 25, whether declared or not.** `on_fail` and `beats` cover the endings an author thought to write; `max_turns` covers the ones nobody anticipated — a player who circles a scene indefinitely without triggering anything else. On exceeding it, the engine forces `on_exhausted` (a scene or ending id, same target rules as `beat.goto`); if the scene declares none, it falls back to the quest's first `universal_ending`. This is invisible to the model — like `beats` and `on_fail`, it is never shown in `{{SCENE}}` and the model never reasons about it; it just keeps narrating, and the engine cuts in if the scene has genuinely run too long. The validator requires every scene to have *somewhere* to go when this fires: either its own `on_exhausted`, or at least one `universal_ending` declared at the quest level.
+
+---
+
+## degradations
+
+Quest-level, named by id, referenced from a `guarded_event.on_allowed.degrade` or a `clock.deadline.on_reached` in `"degrade"` mode. The lesson behind this mechanism: a player who insisted on something the quest couldn't allow, and got a dead end for it, is a player who stopped playing. Failure should cost something other than a restart.
+
+```json
+"degradations": {
+  "no_account": {
+    "description": "Helen left before telling you about the whistle or the locked door.",
+    "sets": ["missed_account"],
+    "unlocks": ["to_surrey"],
+    "consequences": [
+      "The night watch is far harder — you do not know to expect a sound.",
+      "You will not recognise the significance of the ventilator without prompting."
+    ],
+    "still_winnable": true
+  }
+}
+```
+
+**`sets`** applies flags exactly like a discoverable or exit — the same `sets`-is-the-only-channel rule from the turn contract applies here too.
+
+**`unlocks` names exits (anywhere in the quest, by id) whose `requires` gate is bypassed for the rest of the session once this degradation is active.** `to_surrey` normally requires `ready_to_travel` (= `heard_the_account`); if Helen left before that was ever set, the clean path to Stoke Moran is gone for good unless something else opens it. `no_account` is that something else — the player can still go, just without knowing what to look for.
+
+**`consequences` is flavor text, read by nobody but the author.** The engine doesn't act on it; it exists to document, at the point of authorship, what the degradation is supposed to cost, so the tradeoff is legible without having to trace it through play.
+
+**`still_winnable` is the honesty check.** `true` means the degraded path can still reach a win ending, just harder (as `no_account` does — the player travels blind, but the room still tells its story to someone paying attention). `still_winnable: false` is permitted for a degradation that closes off winning entirely, but it **must** then name the `ending` it eventually routes to — a degraded path that can neither win nor end is exactly the bug `guarded_events` exists to prevent, just reached through a different door, and the validator rejects it.
 
 ---
 
@@ -245,6 +352,18 @@ Supported: `AND`, `OR`, `NOT`, parentheses, flag names, and `character.helen >= 
 ```
 
 `direction` rather than `text` so the ending still responds to how the player arrived. Every ending should carry an instruction not to explain the mechanism — the image does the work, and explaining it retroactively hands over the secret the whole quest protected.
+
+**`universal_endings` — v3 addition, same shape, quest-level, not per-scene.** A small set of generic endings every quest inherits, so a termination backstop (`max_turns`, and later `pressure`) always has somewhere to land without every scene needing a bespoke `on_exhausted` written for it:
+
+```json
+"universal_endings": [
+  { "id": "u_too_slow", "result": "loss", "direction": "The moment passed while you were elsewhere. Do not explain what was missed." },
+  { "id": "u_turned_away", "result": "loss", "direction": "You were asked for help and did not give it. The story went on without you." },
+  { "id": "u_lost_thread", "result": "loss", "direction": "Whatever you were following is gone. Do not explain what it was." }
+]
+```
+
+Implicitly reachable from every scene that doesn't declare its own `on_exhausted` — the validator never requires a bespoke path to one, and "ending unreachable" is never raised against them. When a scene falls back to one, the engine uses the **first** entry in the array; order it deliberately if you declare more than one. Every session that resolves via an engine backstop — not just a universal ending; a scene's own `on_exhausted`, or an ending forced by `clock.deadline` in `"ending"` mode, count too — gets an `ending_trigger` recorded alongside `ending_id`, currently one of `"max_turns_exceeded"` or `"deadline_reached"`, with more to follow as other termination backstops (`pressure`) land. A deadline in `"degrade"` mode never sets `ending_trigger`, because it doesn't reach an ending at all — it applies a degradation and the session stays active. `ending_trigger` stays `null` for an ending reached through ordinary play (an exit, an authored `on_fail`) — specifically so a bare "the story ended generically" can be told apart from "the story reached the ending the author actually wrote for this," which is not otherwise visible from `ending_id` alone.
 
 ---
 
@@ -273,26 +392,30 @@ What the model must return. The engine parses this and rejects anything malforme
   "exit_id": "legal exit id, or null",
   "guarded_event_id": "legal guarded_events id, or null",
   "discovered": ["discoverable ids triggered this turn"],
-  "flags_set": ["flags to raise"],
   "disposition_changes": [
     { "character": "helen", "direction": "up", "reason": "gave her time, did not press" }
   ],
   "invented": ["details invented this turn that must stay true"],
+  "minutes_elapsed": 5,
   "refused": false
 }
 ```
+
+`minutes_elapsed` is a suggestion, not a contract field — see `clock` above. The engine prefers an exit's authored `costs_minutes` when one applies, and only falls back to this for free-form turns; a missing or nonsensical value just falls back further, to `default_turn_cost_minutes`.
+
+There is no `flags_set` field. `discoverable.sets` and `exit.sets` already declare which flags a given discoverable or exit raises — the engine applies them the moment it validates `discovered`/`exit_id`, so asking the model to separately name the same flags is redundant bookkeeping with no independent check behind it. Live testing found exactly the failure that predicts: a model reporting a flag directly, with no discoverable or exit behind it at all. General rule going forward: never ask the model to report anything the engine can derive.
 
 **Engine validation before committing anything:**
 
 1. `exit_id` is null or is a legal exit of the current scene
 2. That exit's `requires` and `requires_phase` are satisfied
 3. `guarded_event_id` is null or is a legal `guarded_events` id of the current scene, and its `requires` is satisfied — checked exactly like `exit_id`, but it names a narrated consequence rather than a scene transition, so satisfying it doesn't change `current_scene` on its own
-4. Each `discovered` id belongs to the current scene and its `requires` is met
-5. Each flag in `flags_set` is declared
+4. Each `discovered` id belongs to the current scene and its `requires` is met; the flags it declares in `sets` are applied
+5. If `exit_id` is non-null, the flags it declares in `sets` are applied
 6. `disposition_changes` are clamped to one step, within floor and ceiling
 7. `invented` is appended to session state and fed back in every subsequent turn
 
-Any failure: retry once with the error appended. On second failure, commit nothing, return a null-exit fallback narration, and log it. The log is how you tell a bad model from a bad file.
+Any failure: retry once with the error appended. On second failure, commit nothing, return a null-exit fallback narration, and log it — unless the failure is specifically an unmet `guarded_event.requires` and that event declares `on_allowed.degrade`, in which case the event is let through in degraded form instead (see `degradations` above) rather than falling back. The log is how you tell a bad model from a bad file.
 
 **When a `guarded_event_id` fails validation, the retry is seeded with that event's `on_blocked` text**, not just a bare rejection — the point isn't to make the model guess its way to a legal response, it's to get a *narratively graceful* one on the first retry: the character hesitates, gets interrupted, isn't ready, rather than the turn just silently failing twice and falling back to a null-exit non-answer.
 
@@ -309,10 +432,18 @@ Runs before a quest is playable. Phase 2's builder agent calls this in a loop, s
 - Scene unreachable from `start_scene`
 - No path from start to any `result: "win"` ending
 - `requires` on a flag that no exit or discoverable ever sets *(this is the v1 `dusk_reached` bug)*
-- `requires_phase` naming a phase not in the clock, or unreachable given `advances_on`
+- `requires_phase` naming a phase not in the clock *(v3: every declared phase is reachable purely by story-time passing, so there is no separate reachability check the way v2's `advances_on` needed)*
 - Character referenced in `present` or a `requires` but not declared
 - Disposition level referenced in a requirement but not in that character's `levels`
 - Empty `secrets` on a quest with a win condition
+- A scene with no `on_exhausted` and the quest with no `universal_endings` declared — nothing catches that scene if `max_turns` is ever exceeded
+- A `clock.phases` entry's `until` that isn't a valid `HH:MM` time
+- `clock.deadline.at` that isn't after `clock.starts_at`
+- `clock.deadline.on_reached` with an invalid `mode`, an `"ending"` mode with no `ending` field or one naming an undeclared ending, or a `"degrade"` mode (default) with no `degrade` field or one naming an undeclared degradation
+- A `guarded_event.on_allowed.degrade` naming an undeclared degradation
+- A `degradation.unlocks` entry naming an exit id that doesn't exist in any scene
+- A degradation with `still_winnable: false` that names no ending, or names one that doesn't exist
+- `pressure.on_exhausted` naming a guarded_events id not declared on that same scene
 
 **Warnings — playable but suspect:**
 - Flag declared and never set, or set and never read
@@ -321,5 +452,9 @@ Runs before a quest is playable. Phase 2's builder agent calls this in a loop, s
 - Scene with no exits and no `on_fail`
 - Ending unreachable
 - A scene has a character present whose discoverables set a flag required elsewhere (by a `requires` or `derived` expression anywhere in the quest), but the scene has no `guarded_events` at all *(this is the s1 Helen-departure bug — a character can be narrated out of the story with nothing gating it, silently soft-locking the quest)*
+- `world.absent` with fewer than 3 entries — not enough for the model to generalize a pattern from
+- A `degradations` entry declared but never referenced by any `guarded_event.on_allowed.degrade` or `clock.deadline.on_reached.degrade`
+- A scene with more than four `exits` or `discoverable` entries but no `pressure` declared — busy enough for a player to drift in, with nothing pulling them back
+- A scene's `pressure` exhaustion turn (`idle_after_turns * escalation.length`) landing at or after a `beat.at_turn` in the same scene, or after `max_turns` — the beat or the scene budget always fires first, so `on_exhausted` can never actually be reached
 
 The win-path check is the one that matters most. It is what a human author cannot reliably do by eye, and it is exactly the bug I shipped in v1.

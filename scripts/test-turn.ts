@@ -16,7 +16,6 @@ const scriptedResponses = [
     narration: "She tells you, haltingly: two years ago, a fortnight before her wedding. The door was locked from inside.",
     exit_id: null,
     discovered: ["the_death"],
-    flags_set: ["heard_the_account"],
     disposition_changes: [],
     invented: [],
     refused: false,
@@ -26,7 +25,6 @@ const scriptedResponses = [
     narration: "You step out toward the station.",
     exit_id: "to_nonexistent_place",
     discovered: [],
-    flags_set: [],
     disposition_changes: [],
     invented: [],
     refused: false,
@@ -36,7 +34,6 @@ const scriptedResponses = [
     narration: "You decide against leaving just yet and sit back down.",
     exit_id: null,
     discovered: [],
-    flags_set: [],
     disposition_changes: [],
     invented: ["A clock on the mantel ticks loudly in the quiet."],
     refused: false,
@@ -84,7 +81,7 @@ async function runTurn(label: string, playerInput: string) {
       (result.ending ? ` ending=${result.ending.id} ("${result.ending.title}")` : "")
   );
   console.log(
-    `session -> scene=${result.session.current_scene} phase=${result.session.phase} scene_turn_count=${result.session.scene_turn_count} flags_set_true=${Object.entries(result.session.flags).filter(([, v]) => v).map(([k]) => k).join(", ") || "(none)"} invented=${JSON.stringify(result.session.invented)}`
+    `session -> scene=${result.session.current_scene} phase=${result.session.phase} scene_turn_count=${result.session.scene_turn_count} flags_true=${Object.entries(result.session.flags).filter(([, v]) => v).map(([k]) => k).join(", ") || "(none)"} invented=${JSON.stringify(result.session.invented)}`
   );
   console.log("");
 }

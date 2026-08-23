@@ -2,8 +2,9 @@
 // judges, the engine decides." Nothing the model reports is trusted until
 // checked against the quest file and current session state.
 
-import type { CharacterSpec, Quest, SceneSpec } from "./validator.ts";
+import type { CharacterSpec, GuardedEventSpec, Quest, SceneSpec } from "./validator.ts";
 import { evaluateExpression, type ExprContext } from "./expr.ts";
+import { addMinutes, derivePhase, hasReached } from "./clock.ts";
 import { buildPromptParts, type SessionState, type TurnRecord } from "./prompt.ts";
 import { selectModel, type ModelAdapter, type ModelEnv } from "./models/index.ts";
 import {
@@ -28,16 +29,17 @@ export interface ModelTurnResponse {
   exit_id: string | null;
   guarded_event_id: string | null;
   discovered: string[];
-  flags_set: string[];
   disposition_changes: DispositionChange[];
   invented: string[];
   refused: boolean;
+  /** A suggestion, not authoritative — the engine prefers an exit's costs_minutes when one applies, and falls back to this only for free-form turns. */
+  minutes_elapsed?: number;
 }
 
 export interface TurnResult {
   narration: string;
   status: SessionStatus;
-  ending?: { id: string; title: string; direction: string };
+  ending?: { id: string; title: string; direction: string; trigger?: string };
   refused: boolean;
   session: Session;
 }
@@ -82,9 +84,6 @@ function parseModelResponse(text: string): ModelTurnResponse {
   if (!Array.isArray(obj.discovered) || !obj.discovered.every((x) => typeof x === "string")) {
     throw new Error("'discovered' must be an array of strings");
   }
-  if (!Array.isArray(obj.flags_set) || !obj.flags_set.every((x) => typeof x === "string")) {
-    throw new Error("'flags_set' must be an array of strings");
-  }
   if (!Array.isArray(obj.disposition_changes)) {
     throw new Error("'disposition_changes' must be an array");
   }
@@ -103,15 +102,23 @@ function parseModelResponse(text: string): ModelTurnResponse {
   }
   if (typeof obj.refused !== "boolean") throw new Error("'refused' must be a boolean");
 
+  // A suggestion, not a contract field — silently dropped rather than
+  // rejected if missing or nonsensical, since an authored costs_minutes or
+  // clock.default_turn_cost_minutes always covers the gap.
+  const minutesElapsed =
+    typeof obj.minutes_elapsed === "number" && Number.isFinite(obj.minutes_elapsed) && obj.minutes_elapsed >= 0
+      ? obj.minutes_elapsed
+      : undefined;
+
   return {
     narration: obj.narration,
     exit_id: obj.exit_id as string | null,
     guarded_event_id: (obj.guarded_event_id ?? null) as string | null,
     discovered: obj.discovered as string[],
-    flags_set: obj.flags_set as string[],
     disposition_changes: dispositionChanges,
     invented: obj.invented as string[],
     refused: obj.refused,
+    minutes_elapsed: minutesElapsed,
   };
 }
 
@@ -148,7 +155,13 @@ function validateTurnResponse(
     if (!exit) {
       errors.push(`exit_id '${response.exit_id}' is not a legal exit of scene '${scene.id}'`);
     } else {
-      if (exit.requires && !evaluateExpression(exit.requires, ctx)) {
+      // An active degradation's `unlocks` bypasses this exit's requires gate
+      // entirely — that's the whole point of unlocking it: the clean path
+      // was missed, but the story doesn't dead-end because of it.
+      const unlockedByDegradation = session.active_degradations.some((degId) =>
+        (quest.degradations?.[degId]?.unlocks ?? []).includes(exit.id)
+      );
+      if (exit.requires && !unlockedByDegradation && !evaluateExpression(exit.requires, ctx)) {
         errors.push(`exit '${exit.id}' requires '${exit.requires}', which is not currently satisfied`);
       }
       if (exit.requires_phase && exit.requires_phase !== session.phase) {
@@ -184,12 +197,6 @@ function validateTurnResponse(
       errors.push(
         `discoverable '${discoveredId}' requires '${discoverable.requires}', which is not currently satisfied`
       );
-    }
-  }
-
-  for (const flag of response.flags_set) {
-    if (!(flag in quest.flags)) {
-      errors.push(`flag '${flag}' in flags_set is not declared in the quest`);
     }
   }
 
@@ -269,19 +276,41 @@ async function attemptTurn(
   };
 }
 
+// Whether a failed final attempt should fall into a degradation instead of
+// the generic "commit nothing" dead end: the model must still be insisting
+// on the same guarded_event_id, that event must declare on_allowed.degrade,
+// and — critically — the guarded_event's unmet requires must be the *only*
+// reason this attempt was rejected. Any other error alongside it means
+// something else is wrong with the response, and the safer outcome is the
+// ordinary fallback, not silently accepting a response that also failed
+// some unrelated check.
+function findDegradeEligibleGuardedEvent(attempt: Attempt, scene: SceneSpec): GuardedEventSpec | null {
+  if (!attempt.parsed || attempt.parsed.guarded_event_id === null) return null;
+  const guardedEvent = (scene.guarded_events ?? []).find((g) => g.id === attempt.parsed!.guarded_event_id);
+  if (!guardedEvent?.on_allowed?.degrade) return null;
+  const onlyError =
+    attempt.validation.errors.length === 1 &&
+    attempt.validation.errors[0]!.startsWith(`guarded_event '${guardedEvent.id}' requires`);
+  return onlyError ? guardedEvent : null;
+}
+
 // ---- state transition ----
 
 interface NextState {
   current_scene: string;
   phase: string;
+  story_time: string;
   flags: Record<string, boolean>;
   characters: Record<string, string>;
   invented: string[];
   transcript: TurnRecord[];
   scene_turn_count: number;
   fired_beats: string[];
+  active_degradations: string[];
+  idle_turns: number;
   status: SessionStatus;
   ending_id: string | null;
+  ending_trigger: string | null;
 }
 
 function clampedStep(character: CharacterSpec, currentLevel: string, direction: "up" | "down"): string {
@@ -294,26 +323,28 @@ function clampedStep(character: CharacterSpec, currentLevel: string, direction: 
   return levels[nextIdx]!;
 }
 
-function advancePhaseIfLater(phases: string[], current: string, target: string): string {
-  return phases.indexOf(target) > phases.indexOf(current) ? target : current;
-}
-
 function computeNextState(
   quest: Quest,
   session: Session,
   scene: SceneSpec,
   response: ModelTurnResponse,
-  playerInput: string
+  playerInput: string,
+  /** Set only when both model attempts insisted on a guarded_event whose `requires` was never met and which declares `on_allowed.degrade` — the event is let through in degraded form instead of dead-ending. */
+  forcedDegrade: GuardedEventSpec | null = null
 ): NextState {
   const flags: Record<string, boolean> = { ...session.flags };
-  for (const f of response.flags_set) flags[f] = true;
 
   // discoverable.sets and exit.sets are quest-authored, deterministic
-  // mappings the engine already knows — apply them directly for anything
-  // the model validly discovered/took, rather than trusting the model to
-  // separately re-derive and echo them into flags_set. Live testing showed
-  // this isn't a hypothetical: a model can correctly report `discovered`
-  // while still omitting the matching flags_set entry.
+  // mappings the engine already knows — this is the only place flags get
+  // set. There used to also be a model-reported flags_set field; it was
+  // removed from the turn contract because it was a second, unchecked
+  // channel for the same information: live testing showed a model setting
+  // a flag directly via flags_set with no matching discovered/exit_id
+  // behind it — the exact class of ungated consequence guarded_events
+  // exists to catch, just through a different door. The engine deriving
+  // every flag from something it already validated closes that door
+  // entirely, per the general rule: never ask the model to report
+  // anything the engine can derive.
   for (const discoveredId of response.discovered) {
     const discoverable = (scene.discoverable ?? []).find((d) => d.id === discoveredId);
     for (const f of discoverable?.sets ?? []) flags[f] = true;
@@ -322,6 +353,21 @@ function computeNextState(
     const takenExit = (scene.exits ?? []).find((e) => e.id === response.exit_id);
     for (const f of takenExit?.sets ?? []) flags[f] = true;
   }
+
+  // guarded_events.on_allowed.degrade — the event was let through in a worse
+  // state rather than blocked or dead-ended. Applied once per session per
+  // degradation; a degradation's `unlocks` then stays in effect for every
+  // later turn via the check in validateTurnResponse.
+  const activeDegradations = [...session.active_degradations];
+  if (forcedDegrade?.on_allowed?.degrade) {
+    const degId = forcedDegrade.on_allowed.degrade;
+    if (!activeDegradations.includes(degId)) activeDegradations.push(degId);
+    for (const f of quest.degradations?.[degId]?.sets ?? []) flags[f] = true;
+  }
+
+  // fired_beats is shared by beats (below) and pressure (next) — both are
+  // "once per session" backstops keyed by scene, so one array covers both.
+  const firedBeats = [...session.fired_beats];
 
   const characters: Record<string, string> = { ...session.characters };
   for (const change of response.disposition_changes) {
@@ -340,21 +386,78 @@ function computeNextState(
     const exit = (scene.exits ?? []).find((e) => e.id === response.exit_id)!;
     currentScene = exit.to;
     sceneTurnCount = 0;
+  } else if (forcedDegrade?.on_allowed?.goto) {
+    currentScene = forcedDegrade.on_allowed.goto;
+    sceneTurnCount = 0;
   } else {
     sceneTurnCount += 1;
   }
 
-  let phase = session.phase;
-  for (const adv of quest.clock.advances_on ?? []) {
-    if (adv.exit && adv.exit === response.exit_id) {
-      phase = advancePhaseIfLater(quest.clock.phases, phase, adv.to);
-    }
-    if (adv.turns_in_scene !== undefined && adv.scene === currentScene && sceneTurnCount >= adv.turns_in_scene) {
-      phase = advancePhaseIfLater(quest.clock.phases, phase, adv.to);
+  // pressure — idle-turn tracking plus the escalation backstop. A turn
+  // counts as idle when it sets no flag, triggers no discoverable, takes no
+  // exit, and fires no guarded event (forcedDegrade counts as firing one).
+  // Scoped to the scene the player was actually idling in — `scene`, not
+  // wherever this turn's own exit/forcedDegrade just sent them; if either of
+  // those already moved the player on, this turn plainly wasn't idle and the
+  // reset below reflects that either way.
+  //
+  // The exhaustion check below deliberately uses session.idle_turns — the
+  // count *entering* this turn — rather than the post-this-turn value
+  // computed just after it. That's the same count buildPromptParts used to
+  // decide this turn's escalation hint, so the turn where the model is shown
+  // the final line is exactly the turn the engine forces on_exhausted, not
+  // one turn later — the model's own narration and the engine's forced
+  // state change land on the same turn instead of one lagging the other.
+  const wasIdle =
+    response.exit_id === null && response.discovered.length === 0 && response.guarded_event_id === null && !forcedDegrade;
+  const alreadyLeftScene = currentScene !== session.current_scene;
+  let idleTurns = alreadyLeftScene ? 0 : wasIdle ? session.idle_turns + 1 : 0;
+
+  if (!alreadyLeftScene && scene.pressure) {
+    const { idle_after_turns, escalation, on_exhausted } = scene.pressure;
+    const tier = Math.floor(session.idle_turns / idle_after_turns);
+    const pressureKey = `${scene.id}#pressure`;
+    if (tier >= escalation.length && !firedBeats.includes(pressureKey)) {
+      // Same resolution a model-insisted degrade uses: apply on_allowed.degrade
+      // only if the event's own requires is genuinely still unmet (skip it
+      // if the player actually satisfied it and just lingered afterward —
+      // that's not a missed opportunity, just an overstayed one), and force
+      // on_allowed.goto regardless, since the opportunity closes either way.
+      const pressureEvent = (scene.guarded_events ?? []).find((g) => g.id === on_exhausted)!;
+      const ctxNow = buildContext(quest, flags, characters);
+      const requiresUnmet = !!pressureEvent.requires && !evaluateExpression(pressureEvent.requires, ctxNow);
+      if (requiresUnmet && pressureEvent.on_allowed?.degrade) {
+        const degId = pressureEvent.on_allowed.degrade;
+        if (!activeDegradations.includes(degId)) activeDegradations.push(degId);
+        for (const f of quest.degradations?.[degId]?.sets ?? []) flags[f] = true;
+      }
+      if (pressureEvent.on_allowed?.goto) {
+        currentScene = pressureEvent.on_allowed.goto;
+        sceneTurnCount = 0;
+      }
+      firedBeats.push(pressureKey);
+      idleTurns = 0;
     }
   }
 
-  const firedBeats = [...session.fired_beats];
+  // Minutes elapsed this turn: an authored costs_minutes on the taken exit
+  // wins (deterministic, author-controlled — travel always costs what the
+  // author said); failing that, the model's own minutes_elapsed estimate,
+  // clamped to a sane range so a wild guess can't skip hours of story-time
+  // in one exchange; failing that, the quest's default_turn_cost_minutes.
+  let minutesElapsed: number;
+  const takenExitForCost = response.exit_id !== null ? (scene.exits ?? []).find((e) => e.id === response.exit_id) : undefined;
+  if (takenExitForCost?.costs_minutes !== undefined) {
+    minutesElapsed = takenExitForCost.costs_minutes;
+  } else if (response.minutes_elapsed !== undefined) {
+    minutesElapsed = Math.min(response.minutes_elapsed, 60);
+  } else {
+    minutesElapsed = quest.clock.default_turn_cost_minutes;
+  }
+
+  let storyTime = addMinutes(session.story_time, minutesElapsed);
+  let phase = derivePhase(quest.clock.phases, storyTime);
+
   const sceneAfterExit = quest.scenes.find((s) => s.id === currentScene);
   if (sceneAfterExit) {
     const beatsInOrder = [...(sceneAfterExit.beats ?? [])].sort((a, b) => a.at_turn - b.at_turn);
@@ -364,6 +467,10 @@ function computeNextState(
       if (sceneTurnCount < beat.at_turn) continue;
 
       for (const f of beat.sets ?? []) flags[f] = true;
+      if (beat.costs_minutes) {
+        storyTime = addMinutes(storyTime, beat.costs_minutes);
+        phase = derivePhase(quest.clock.phases, storyTime);
+      }
       if (beat.once ?? true) firedBeats.push(key);
       if (beat.goto) {
         currentScene = beat.goto;
@@ -381,25 +488,91 @@ function computeNextState(
     }
   }
 
+  // clock.deadline — the whole-quest backstop, checked before the
+  // scene-local max_turns one below. `on_reached.mode` is a per-quest
+  // choice: "ending" forces a named ending outright (and, like beats/on_fail,
+  // wins over max_turns this same turn — an authored "time's up" moment
+  // beats a generic, unauthored safety net); "degrade" (the default) applies
+  // a named degradation and lets the story continue, so max_turns still
+  // needs to apply normally on every later turn — nothing else guarantees
+  // termination for a session that keeps playing past its deadline.
+  // Checked against the final story_time, after exits and any beat
+  // costs_minutes have already been folded in.
+  let deadlineForcedEnding = false;
+  if (quest.clock.deadline && hasReached(storyTime, quest.clock.deadline.at)) {
+    const onReached = quest.clock.deadline.on_reached;
+    const mode = onReached.mode ?? "degrade";
+    if (mode === "ending") {
+      deadlineForcedEnding = true;
+      currentScene = onReached.ending!;
+    } else {
+      const degId = onReached.degrade!;
+      if (!activeDegradations.includes(degId)) activeDegradations.push(degId);
+      for (const f of quest.degradations?.[degId]?.sets ?? []) flags[f] = true;
+    }
+  }
+
+  // max_turns termination backstop — every scene has one (default 25)
+  // whether declared or not. Checked last, after exits/beats/on_fail/
+  // deadline have already had their chance to move things along, so it
+  // only fires when the player is genuinely stuck in the same scene.
+  // Falls back to the quest's first universal_ending when the scene
+  // declares no on_exhausted of its own — the validator guarantees at
+  // least one of those exists.
+  let maxTurnsTriggered = false;
+  const sceneForMaxTurns = deadlineForcedEnding ? undefined : quest.scenes.find((s) => s.id === currentScene);
+  if (sceneForMaxTurns) {
+    const maxTurns = sceneForMaxTurns.max_turns ?? 25;
+    if (sceneTurnCount > maxTurns) {
+      maxTurnsTriggered = true;
+      if (sceneForMaxTurns.on_exhausted) {
+        currentScene = sceneForMaxTurns.on_exhausted;
+      } else if ((quest.universal_endings ?? []).length > 0) {
+        currentScene = quest.universal_endings![0]!.id;
+      }
+    }
+  }
+
   let status: SessionStatus = session.status;
   let endingId: string | null = null;
-  const ending = quest.endings.find((e) => e.id === currentScene);
+  let endingTrigger: string | null = null;
+  const ending =
+    quest.endings.find((e) => e.id === currentScene) ?? (quest.universal_endings ?? []).find((e) => e.id === currentScene);
   if (ending) {
     endingId = ending.id;
     status = ending.result === "win" ? "won" : "lost";
+    // Only meaningful when an engine backstop is what actually landed us
+    // here this turn — an ending reached through ordinary play (an exit, an
+    // authored on_fail) has an obvious cause already visible in the quest
+    // file, so it gets no trigger reason. The whole point of this field is
+    // to separate "the story genuinely ran out of road" from "an author
+    // forgot to write an ending for a branch that's actually reachable" —
+    // that question only exists for the generic safety nets.
+    if (deadlineForcedEnding) endingTrigger = "deadline_reached";
+    else if (maxTurnsTriggered) endingTrigger = "max_turns_exceeded";
   }
+
+  // Anything that moved the player on after pressure's own check (beats,
+  // on_fail, the deadline, max_turns) leaves the scene idle_turns was
+  // tracking — zero it regardless of source, same as scene_turn_count
+  // conceptually restarts on any scene change.
+  const finalIdleTurns = currentScene === session.current_scene ? idleTurns : 0;
 
   return {
     current_scene: currentScene,
     phase,
+    story_time: storyTime,
     flags,
     characters,
     invented,
     transcript,
     scene_turn_count: sceneTurnCount,
     fired_beats: firedBeats,
+    active_degradations: activeDegradations,
+    idle_turns: finalIdleTurns,
     status,
     ending_id: endingId,
+    ending_trigger: endingTrigger,
   };
 }
 
@@ -440,9 +613,12 @@ export async function processTurn(params: {
   const sessionState: SessionState = {
     current_scene: session.current_scene,
     phase: session.phase,
+    story_time: session.story_time,
     flags: session.flags,
     characters: session.characters,
     invented: session.invented,
+    idle_turns: session.idle_turns,
+    pressure_fired: session.fired_beats.includes(`${session.current_scene}#pressure`),
   };
   const { system: systemPrompt, user: baseUser } = buildPromptParts(quest, sessionState, session.transcript, playerInput);
 
@@ -490,44 +666,65 @@ export async function processTurn(params: {
     }
   }
 
+  let forcedDegrade: GuardedEventSpec | null = null;
   if (!final.validation.valid || !final.parsed) {
-    // Second failure: commit nothing, return a null-exit fallback.
-    await logAllAttempts(0);
-    return {
-      narration: FALLBACK_NARRATION,
-      status: session.status,
-      refused: false,
-      session,
-    };
+    forcedDegrade = final.parsed ? findDegradeEligibleGuardedEvent(final, scene) : null;
+    if (!forcedDegrade) {
+      // Second failure, with no degrade to fall into: commit nothing,
+      // return a null-exit fallback.
+      await logAllAttempts(0);
+      return {
+        narration: FALLBACK_NARRATION,
+        status: session.status,
+        refused: false,
+        session,
+      };
+    }
+    // Falls through: the event is allowed to happen after all, in degraded
+    // form, using this same final attempt's narration and other fields —
+    // everything about it passed validation except the one gate that's
+    // about to be bent instead of enforced.
   }
 
-  const response = final.parsed;
-  const next = computeNextState(quest, session, scene, response, playerInput);
+  const response = final.parsed!;
+  const next = computeNextState(quest, session, scene, response, playerInput, forcedDegrade);
 
   const commitStart = Date.now();
   const updatedSession = await commitTurn(client, sessionId, {
     current_scene: next.current_scene,
     phase: next.phase,
+    story_time: next.story_time,
     flags: next.flags,
     characters: next.characters,
     invented: next.invented,
     transcript: next.transcript,
     scene_turn_count: next.scene_turn_count,
     fired_beats: next.fired_beats,
+    active_degradations: next.active_degradations,
+    idle_turns: next.idle_turns,
     status: next.status,
     ending_id: next.ending_id,
+    ending_trigger: next.ending_trigger,
   });
   const dbCommitMs = Date.now() - commitStart;
 
   await logAllAttempts(dbCommitMs);
 
-  const endingSpec = next.ending_id ? quest.endings.find((e) => e.id === next.ending_id) : undefined;
+  const endingSpec = next.ending_id
+    ? (quest.endings.find((e) => e.id === next.ending_id) ??
+      (quest.universal_endings ?? []).find((e) => e.id === next.ending_id))
+    : undefined;
 
   return {
     narration: response.narration,
     status: updatedSession.status,
     ending: endingSpec
-      ? { id: endingSpec.id, title: endingSpec.title, direction: endingSpec.direction }
+      ? {
+          id: endingSpec.id,
+          title: endingSpec.title,
+          direction: endingSpec.direction,
+          trigger: next.ending_trigger ?? undefined,
+        }
       : undefined,
     refused: response.refused,
     session: updatedSession,

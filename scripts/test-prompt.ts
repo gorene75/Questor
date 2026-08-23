@@ -12,6 +12,7 @@ const quest = JSON.parse(readFileSync(path, "utf-8")) as Quest;
 const session: SessionState = {
   current_scene: "s1_baker_street",
   phase: "morning",
+  story_time: "1883-04-06T09:40:00",
   flags: {
     heard_the_account: true,
     knows_the_whistle: false,
@@ -36,6 +37,8 @@ const session: SessionState = {
     "The fire in the grate has burned down to embers.",
     "A hansom cab clatters past in the street below and does not stop.",
   ],
+  idle_turns: 0,
+  pressure_fired: false,
 };
 
 // 8 fake turns, to prove HISTORY caps at the last 6 rather than the full transcript.

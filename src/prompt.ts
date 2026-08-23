@@ -1,18 +1,25 @@
 // Pure prompt assembly. No I/O, no network — the template text is compiled in
 // via promptTemplate.ts (generated from prompts/play-agent.md), not read from disk.
 
-import type { CharacterSpec, DiscoverableSpec, ExitSpec, GuardedEventSpec, Quest } from "./validator.ts";
+import type { CharacterSpec, DiscoverableSpec, ExitSpec, GuardedEventSpec, Quest, SceneSpec } from "./validator.ts";
 import { evaluateExpression, type ExprContext } from "./expr.ts";
+import { formatTimeOfDay } from "./clock.ts";
 import { PLAY_AGENT_TEMPLATE } from "./promptTemplate.ts";
 
 export interface SessionState {
   current_scene: string;
   phase: string;
+  /** ISO story-time — shown to the model as just the time-of-day, never the raw machine datetime. */
+  story_time: string;
   flags: Record<string, boolean>;
   /** character id -> current disposition level. Absent entries default to that character's starts_at. */
   characters: Record<string, string>;
   /** every detail invented so far this session, across all scenes. */
   invented: string[];
+  /** Consecutive idle turns in the current scene, entering this turn — drives which pressure escalation line (if any) to show. */
+  idle_turns: number;
+  /** True once this scene's pressure has already forced its on_exhausted guarded_event — suppresses further escalation text, since the opportunity already resolved. */
+  pressure_fired: boolean;
 }
 
 export interface TurnRecord {
@@ -56,6 +63,27 @@ function buildFrame(quest: Quest): string {
     joinLines(quest.narrator.extra_rules.map((r) => `- ${r}`), "(none)"),
     `Extra refusals:`,
     joinLines(quest.narrator.extra_refusals.map((r) => `- ${r}`), "(none)"),
+  ].join("\n");
+}
+
+function buildWorld(quest: Quest): string {
+  const world = quest.world;
+  if (!world) return "(no world frame declared — use ordinary judgment about what belongs)";
+
+  return [
+    `Setting: ${world.setting}`,
+    `Register: ${world.register}`,
+    `Physics: ${world.physics}`,
+    `Supernatural: ${world.supernatural}`,
+    `Weirdness: ${world.weirdness}/10`,
+    "",
+    "Absent (illustrative pattern, not a checklist):",
+    joinLines(world.absent.map((a) => `- ${a}`), "(none declared)"),
+    "",
+    "Present (illustrative pattern, not a checklist):",
+    joinLines(world.present.map((p) => `- ${p}`), "(none declared)"),
+    "",
+    `Anachronism handling: ${world.anachronism_response}`,
   ].join("\n");
 }
 
@@ -111,6 +139,22 @@ function describeGuardedEvent(ge: GuardedEventSpec, ctx: ExprContext): string {
   return `- ${ge.id} (${status}): trigger "${ge.trigger}" — requires '${ge.requires}' — if this comes up, narrate it as: ${ge.on_blocked}`;
 }
 
+/**
+ * The one escalation line (if any) to show for this turn. Tier k (1-indexed)
+ * covers idle_turns in [idle_after_turns*k, idle_after_turns*(k+1) - 1);
+ * tier >= escalation.length all show the last line — that's also the tier at
+ * which the engine forces on_exhausted, so the last line is written to read
+ * naturally as the moment itself, not just another nudge toward it.
+ * pressure_fired silences this scene's pressure entirely once it's resolved.
+ */
+function buildPressureHint(scene: SceneSpec, session: SessionState): string | null {
+  if (!scene.pressure || session.pressure_fired) return null;
+  const { idle_after_turns, escalation } = scene.pressure;
+  const tier = Math.floor(session.idle_turns / idle_after_turns);
+  if (tier < 1) return null;
+  return escalation[Math.min(tier, escalation.length) - 1]!;
+}
+
 function buildScene(quest: Quest, session: SessionState): string {
   const scene = findScene(quest, session.current_scene);
   const ctx = buildExprContext(quest, session);
@@ -118,9 +162,10 @@ function buildScene(quest: Quest, session: SessionState): string {
   const exitLines = (scene.exits ?? []).map((exit) => describeExit(exit, ctx, session.phase));
   const discoverableLines = (scene.discoverable ?? []).map((d) => describeDiscoverable(d, ctx));
   const guardedEventLines = (scene.guarded_events ?? []).map((ge) => describeGuardedEvent(ge, ctx));
+  const pressureHint = buildPressureHint(scene, session);
 
-  return [
-    `Current phase: ${session.phase}`,
+  const lines = [
+    `Current time: ${formatTimeOfDay(session.story_time)} (${session.phase})`,
     "",
     "Truths:",
     joinLines(scene.truths.map((t) => `- ${t}`), "(none)"),
@@ -136,7 +181,17 @@ function buildScene(quest: Quest, session: SessionState): string {
     "",
     "Guarded events:",
     joinLines(guardedEventLines, "(none)"),
-  ].join("\n");
+  ];
+
+  if (pressureHint) {
+    lines.push(
+      "",
+      "World pressure — work this into your narration this turn, naturally, as something that happens rather than something you announce:",
+      pressureHint
+    );
+  }
+
+  return lines.join("\n");
 }
 
 function buildCharacterBlock(charId: string, character: CharacterSpec, session: SessionState): string {
@@ -208,6 +263,7 @@ function fillTemplate(
 ): string {
   const sections: Record<string, string> = {
     FRAME: buildFrame(quest),
+    WORLD: buildWorld(quest),
     CANON: buildCanon(quest),
     SCENE: buildScene(quest, session),
     CHARACTERS: buildCharacters(quest, session),

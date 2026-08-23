@@ -11,15 +11,40 @@
     "schema_version": 2
   },
 
+  "world": {
+    "setting": "London, 1883. Late Victorian, gaslit, pre-telephone.",
+    "register": "Formal and restrained. People, especially a woman of Helen's class and situation, do not say plainly what they fear.",
+    "physics": "realistic",
+    "supernatural": "none",
+    "absent": [
+      "Telephones, electric light, motor cars — no instant long-distance communication",
+      "Modern medicine: no antibiotics, no forensic pathology, no blood tests",
+      "Casual or instant photography as a record of evidence",
+      "Modern policing procedure and legal remedies — no forensic method, no restraining orders, no warrants on suspicion alone",
+      "Modern therapeutic or psychological vocabulary — no diagnoses, no therapy, no counselling"
+    ],
+    "present": [
+      "Hansom cabs, telegrams, gas lamps, coal fires, servants, calling cards",
+      "Trains, revolvers, the postal service"
+    ],
+    "anachronism_response": "Do not refuse out of character. The thing simply is not there, and no one in the room reaches for the idea. Describe what is real instead — never explain that something has not been invented yet, never lecture about the era.",
+    "weirdness": 0
+  },
+
   "clock": {
-    "phases": ["morning", "afternoon", "dusk", "night"],
-    "starts_at": "morning",
-    "advances_on": [
-      { "exit": "to_surrey", "to": "afternoon" },
-      { "turns_in_scene": 10, "scene": "s5_bedroom", "to": "dusk" },
-      { "turns_in_scene": 10, "scene": "s6_roylotts_room", "to": "dusk" },
-      { "exit": "to_watch", "to": "night" }
-    ]
+    "starts_at": "1883-04-06T07:15:00",
+    "default_turn_cost_minutes": 5,
+    "phases": [
+      { "name": "morning", "until": "12:00" },
+      { "name": "afternoon", "until": "18:00" },
+      { "name": "dusk", "until": "20:30" },
+      { "name": "night", "until": "05:00" }
+    ],
+    "deadline": {
+      "at": "1883-04-07T03:00:00",
+      "meaning": "Whatever killed Julia comes for Helen.",
+      "on_reached": { "mode": "ending", "ending": "e_too_late" }
+    }
   },
 
   "canon": {
@@ -158,7 +183,10 @@
     "saw_milk": false,
     "saw_lash": false,
     "saw_chair_marks": false,
-    "roylott_suspects": false
+    "roylott_suspects": false,
+    "missed_account": false,
+    "missed_bedroom_details": false,
+    "missed_roylott_room": false
   },
 
   "derived": {
@@ -222,17 +250,27 @@
         }
       ],
       "exits": [
-        { "id": "to_commons", "when": "player decides to look into the will, the estate, or the money", "to": "s3_commons" },
-        { "id": "to_surrey", "when": "player sets off for Stoke Moran", "requires": "ready_to_travel", "to": "s4_exterior" }
+        { "id": "to_commons", "when": "player decides to look into the will, the estate, or the money", "to": "s3_commons", "costs_minutes": 30 },
+        { "id": "to_surrey", "when": "player sets off for Stoke Moran", "requires": "ready_to_travel", "to": "s4_exterior", "costs_minutes": 180 }
       ],
       "guarded_events": [
         {
           "id": "helen_departs",
           "trigger": "player dismisses Helen, says goodbye, or otherwise signals the interview is over",
           "requires": "heard_the_account",
-          "on_blocked": "Something keeps her a moment longer — she hesitates at the door, or Watson asks one more question, or she simply isn't ready to leave yet. She does not actually go."
+          "on_blocked": "Something keeps her a moment longer — she hesitates at the door, or Watson asks one more question, or she simply isn't ready to leave yet. She does not actually go.",
+          "on_allowed": { "degrade": "no_account", "goto": null }
         }
       ],
+      "pressure": {
+        "idle_after_turns": 2,
+        "escalation": [
+          "Watson takes out his pocket watch, checks it, and does not put it away.",
+          "Helen says, quietly, that she ought to be home before her stepfather notices she has gone.",
+          "Helen rises and reaches for her gloves. She is not asking anymore."
+        ],
+        "on_exhausted": "helen_departs"
+      },
       "beats": [
         { "at_turn": 9, "event": "The door slams back and Roylott fills it.", "goto": "s2_intrusion", "once": true }
       ]
@@ -277,8 +315,8 @@
         { "id": "the_arithmetic", "trigger": "reads the will or works out the figures", "reveal": "The motive, in plain numbers.", "sets": ["knows_the_will"] }
       ],
       "exits": [
-        { "id": "back_to_baker", "when": "player returns to Baker Street", "to": "s1_baker_street" },
-        { "id": "to_surrey", "when": "player sets off for Stoke Moran", "requires": "ready_to_travel", "to": "s4_exterior" }
+        { "id": "back_to_baker", "when": "player returns to Baker Street", "to": "s1_baker_street", "costs_minutes": 30 },
+        { "id": "to_surrey", "when": "player sets off for Stoke Moran", "requires": "ready_to_travel", "to": "s4_exterior", "costs_minutes": 180 }
       ]
     },
 
@@ -303,7 +341,7 @@
         { "id": "the_wall", "trigger": "examines the wall, the scaffolding, or the repairs", "reveal": "The stonework is untouched and needs no repair at all.", "sets": ["saw_sham_repairs"] }
       ],
       "exits": [
-        { "id": "to_bedroom", "when": "player goes in to see the bedroom", "to": "s5_bedroom" }
+        { "id": "to_bedroom", "when": "player goes in to see the bedroom", "to": "s5_bedroom", "costs_minutes": 5 }
       ]
     },
 
@@ -330,10 +368,29 @@
         { "id": "ventilator", "trigger": "examines or asks about the ventilator", "reveal": "It vents not to the open air but into the next room.", "sets": ["saw_ventilator"] }
       ],
       "exits": [
-        { "id": "to_roylott_room", "when": "player asks to see Roylott's room", "to": "s6_roylotts_room" },
-        { "id": "to_watch", "when": "player arranges to keep watch here tonight", "requires_phase": "dusk", "to": "s7_watch" },
-        { "id": "back_outside", "when": "player goes back out to the grounds", "to": "s4_exterior" }
-      ]
+        { "id": "to_roylott_room", "when": "player asks to see Roylott's room", "to": "s6_roylotts_room", "costs_minutes": 5 },
+        { "id": "wait_for_evening", "when": "player decides to wait for evening, pass the time until dusk, or wait for nightfall before the watch", "to": "s5_bedroom", "costs_minutes": 420 },
+        { "id": "to_watch", "when": "player arranges to keep watch here tonight", "requires_phase": "dusk", "to": "s7_watch", "costs_minutes": 190 },
+        { "id": "back_outside", "when": "player goes back out to the grounds", "to": "s4_exterior", "costs_minutes": 5 }
+      ],
+      "guarded_events": [
+        {
+          "id": "helen_urges_leaving",
+          "trigger": "player suggests leaving, or Helen wants to go before finishing here",
+          "requires": "saw_dummy_bellpull AND saw_clamped_bed AND saw_ventilator",
+          "on_blocked": "She hesitates at the door, throws one more glance around the room, and stays a moment longer.",
+          "on_allowed": { "degrade": "rushed_bedroom", "goto": "s4_exterior" }
+        }
+      ],
+      "pressure": {
+        "idle_after_turns": 3,
+        "escalation": [
+          "Helen's eyes go to the door more than once. She says nothing.",
+          "Helen says she would rather not be found in here when he comes back.",
+          "Helen is already moving toward the door. She does not wait to see if you follow."
+        ],
+        "on_exhausted": "helen_urges_leaving"
+      }
     },
 
     {
@@ -358,8 +415,25 @@
         { "id": "no_dog", "trigger": "asks about a dog", "reveal": "There is no dog. There never has been." }
       ],
       "exits": [
-        { "id": "back_to_bedroom", "when": "player leaves this room", "to": "s5_bedroom" }
+        { "id": "back_to_bedroom", "when": "player leaves this room", "to": "s5_bedroom", "costs_minutes": 5 }
       ],
+      "guarded_events": [
+        {
+          "id": "watson_urges_retreat",
+          "trigger": "player wants to leave, or Watson urges leaving before finishing here",
+          "requires": "saw_safe OR saw_milk OR saw_lash OR saw_chair_marks",
+          "on_blocked": "Watson's hand is on your sleeve, then isn't. Whatever he heard, it passes. You are still here.",
+          "on_allowed": { "degrade": "cut_search_short", "goto": "s5_bedroom" }
+        }
+      ],
+      "pressure": {
+        "idle_after_turns": 2,
+        "escalation": [
+          "Watson's eyes keep going to the door. He hasn't said anything yet.",
+          "Watson says, low, that they have been in here long enough."
+        ],
+        "on_exhausted": "watson_urges_retreat"
+      },
       "beats": [
         { "at_turn": 7, "event": "A step creaks on the stair below — not hurried, but listening.", "sets": ["roylott_suspects"], "once": true }
       ],
@@ -418,6 +492,56 @@
       "result": "loss"
     }
   ],
+
+  "universal_endings": [
+    {
+      "id": "u_lost_thread",
+      "title": "Cold trail",
+      "direction": "Whatever you were following is gone. Do not explain what it was.",
+      "result": "loss"
+    },
+    {
+      "id": "u_too_slow",
+      "title": "Too late",
+      "direction": "The moment passed while you were elsewhere. Do not explain what was missed.",
+      "result": "loss"
+    },
+    {
+      "id": "u_turned_away",
+      "title": "Turned away",
+      "direction": "You were asked for help and did not give it. The story went on without you.",
+      "result": "loss"
+    }
+  ],
+
+  "degradations": {
+    "no_account": {
+      "description": "Helen left before telling you about the whistle or the locked door.",
+      "sets": ["missed_account"],
+      "unlocks": ["to_surrey"],
+      "consequences": [
+        "The night watch is far harder — you do not know to expect a sound.",
+        "You will not recognise the significance of the ventilator without prompting."
+      ],
+      "still_winnable": true
+    },
+    "rushed_bedroom": {
+      "description": "Helen drew you out of the bedroom before you had finished examining it.",
+      "sets": ["missed_bedroom_details"],
+      "consequences": [
+        "You'll need to come back and finish before the watch will make sense."
+      ],
+      "still_winnable": true
+    },
+    "cut_search_short": {
+      "description": "Watson pulled you out of Roylott's room before you had found anything in it.",
+      "sets": ["missed_roylott_room"],
+      "consequences": [
+        "You'll need to go back and search properly before the watch will make sense."
+      ],
+      "still_winnable": true
+    }
+  },
 
   "narrator": {
     "voice": "Second person, past tense, Victorian register but plain and unornamented.",

@@ -4,6 +4,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Quest } from "./validator.ts";
 import type { TurnRecord } from "./prompt.ts";
+import { derivePhase } from "./clock.ts";
 
 export type DbClient = SupabaseClient;
 
@@ -35,14 +36,22 @@ export interface Session {
   quest_version: number;
   current_scene: string;
   phase: string;
+  /** ISO story-time, e.g. "1883-04-06T07:15:00" — the source of truth; phase is derived from it. */
+  story_time: string;
   flags: Record<string, boolean>;
   characters: Record<string, string>;
   invented: string[];
   transcript: TurnRecord[];
   scene_turn_count: number;
   fired_beats: string[];
+  /** Degradation ids applied to this session so far, via guarded_events.on_allowed.degrade or clock.deadline.on_reached (mode: "degrade"). Each named degradation's `unlocks` stays in effect for the rest of the session. */
+  active_degradations: string[];
+  /** Consecutive idle turns (per pressure's definition) in the current scene. Resets to 0 on any scene change or non-idle turn. */
+  idle_turns: number;
   status: SessionStatus;
   ending_id: string | null;
+  /** Why an engine backstop (not ordinary play) landed on this ending — e.g. "max_turns_exceeded". Null when the ending was reached through normal play. */
+  ending_trigger: string | null;
   /** Model chosen for this session at creation, or null to use the env/vars default at play time. */
   model_name: string | null;
   created_at: string;
@@ -101,7 +110,8 @@ export async function createSession(client: DbClient, questId: string, modelName
       quest_id: questRow.id,
       quest_version: questRow.version,
       current_scene: quest.meta.start_scene,
-      phase: quest.clock.starts_at,
+      phase: derivePhase(quest.clock.phases, quest.clock.starts_at),
+      story_time: quest.clock.starts_at,
       // Every declared flag starts at its declared default (false), not a
       // literally-empty object — src/expr.ts requires every flag referenced
       // by a `requires`/`derived` expression to be present in the context,
@@ -112,8 +122,11 @@ export async function createSession(client: DbClient, questId: string, modelName
       transcript: [],
       scene_turn_count: 0,
       fired_beats: [],
+      active_degradations: [],
+      idle_turns: 0,
       status: "active",
       ending_id: null,
+      ending_trigger: null,
       model_name: modelName,
     })
     .select()
@@ -133,15 +146,19 @@ export async function loadSession(client: DbClient, sessionId: string): Promise<
 export interface TurnCommitInput {
   current_scene: string;
   phase: string;
+  story_time: string;
   flags: Record<string, boolean>;
   characters: Record<string, string>;
   invented: string[];
   transcript: TurnRecord[];
   scene_turn_count: number;
   fired_beats: string[];
+  active_degradations: string[];
+  idle_turns: number;
   /** Only set when the turn just reached an ending. */
   status?: SessionStatus;
   ending_id?: string | null;
+  ending_trigger?: string | null;
 }
 
 /**
@@ -153,16 +170,20 @@ export async function commitTurn(client: DbClient, sessionId: string, input: Tur
   const update: Record<string, unknown> = {
     current_scene: input.current_scene,
     phase: input.phase,
+    story_time: input.story_time,
     flags: input.flags,
     characters: input.characters,
     invented: input.invented,
     transcript: input.transcript,
     scene_turn_count: input.scene_turn_count,
     fired_beats: input.fired_beats,
+    active_degradations: input.active_degradations,
+    idle_turns: input.idle_turns,
     updated_at: new Date().toISOString(),
   };
   if (input.status !== undefined) update.status = input.status;
   if (input.ending_id !== undefined) update.ending_id = input.ending_id;
+  if (input.ending_trigger !== undefined) update.ending_trigger = input.ending_trigger;
 
   const { data, error } = await client.from("sessions").update(update).eq("id", sessionId).select().single();
 

@@ -42,6 +42,8 @@ export interface ExitSpec {
   requires_phase?: string;
   to: string;
   sets?: string[];
+  /** Minutes the clock advances when this exit is taken. Authored, not model-estimated — falls back to the model's minutes_elapsed, then clock.default_turn_cost_minutes, when unset. */
+  costs_minutes?: number;
 }
 
 export interface BeatSpec {
@@ -50,6 +52,8 @@ export interface BeatSpec {
   goto?: string;
   sets?: string[];
   once?: boolean;
+  /** Minutes the clock advances when this beat fires, in addition to whatever the turn itself already cost. */
+  costs_minutes?: number;
 }
 
 export interface OnFailSpec {
@@ -57,11 +61,40 @@ export interface OnFailSpec {
   to: string;
 }
 
+export interface GuardedEventOnAllowedSpec {
+  /** Degradation id to apply when the event is ultimately allowed to happen despite `requires` never being satisfied — the model insisted through both attempts, so the story bends into a worse state instead of dead-ending. Must name a key in quest.degradations. */
+  degrade?: string;
+  /** Scene or ending to force when the degrade above is applied. null (or omitted) means stay in the current scene. */
+  goto?: string | null;
+}
+
 export interface GuardedEventSpec {
   id: string;
   trigger: string;
   requires?: string;
   on_blocked: string;
+  on_allowed?: GuardedEventOnAllowedSpec;
+}
+
+export interface DegradationSpec {
+  description: string;
+  sets?: string[];
+  /** Exit ids (anywhere in the quest) whose `requires` gate is bypassed once this degradation is active. */
+  unlocks?: string[];
+  /** Flavor text describing what the degradation costs — informational, not read by the engine. */
+  consequences?: string[];
+  still_winnable: boolean;
+  /** Required when still_winnable is false — the ending this degraded path must eventually route to. */
+  ending?: string;
+}
+
+export interface PressureSpec {
+  /** Consecutive idle turns (in this scene) before the first escalation line shows. Also the spacing between later tiers. */
+  idle_after_turns: number;
+  /** Ordered nudge lines. Tier k (1-indexed) shows escalation[k-1] once idle turns reach idle_after_turns * k. The last line covers every tier from escalation.length onward — reaching it is also the turn the engine forces on_exhausted. */
+  escalation: string[];
+  /** A guarded_events id declared in this same scene, forced through (same on_allowed resolution as a model-insisted degrade) once escalation is exhausted. */
+  on_exhausted: string;
 }
 
 export interface SceneSpec {
@@ -79,6 +112,12 @@ export interface SceneSpec {
   guarded_events?: GuardedEventSpec[];
   beats?: BeatSpec[];
   on_fail?: OnFailSpec;
+  /** Termination backstop. Defaults to 25 when unset — every scene has one whether declared or not. */
+  max_turns?: number;
+  /** Scene or ending id to force when max_turns is exceeded. Falls back to the quest's first universal_ending when unset. */
+  on_exhausted?: string;
+  /** Nudges a drifting player instead of letting them idle indefinitely — narrative escalation, then a forced guarded_event as the backstop. */
+  pressure?: PressureSpec;
 }
 
 export interface EndingSpec {
@@ -88,17 +127,35 @@ export interface EndingSpec {
   result: "win" | "loss";
 }
 
-export interface ClockAdvanceSpec {
-  exit?: string;
-  scene?: string;
-  turns_in_scene?: number;
-  to: string;
+export interface ClockPhaseSpec {
+  name: string;
+  /** "HH:MM", 24-hour — the time-of-day this phase ends. Phases wrap circularly; the last phase's `until` is implicitly the first phase's start. */
+  until: string;
+}
+
+export interface DeadlineOnReachedSpec {
+  /** "degrade" (default): apply a named degradation and keep playing. "ending": force a named ending outright. A per-quest choice — the deadline no longer assumes hitting it is fatal. */
+  mode?: "degrade" | "ending";
+  /** Required when mode is "ending". Must name a declared ending or universal_ending. */
+  ending?: string;
+  /** Required when mode is "degrade" (the default). Must name a key in quest.degradations. */
+  degrade?: string;
+}
+
+export interface ClockDeadlineSpec {
+  /** ISO datetime — the quest-wide backstop. Once story-time reaches this, the engine forces `on_reached` regardless of scene. */
+  at: string;
+  meaning: string;
+  on_reached: DeadlineOnReachedSpec;
 }
 
 export interface ClockSpec {
-  phases: string[];
+  /** ISO datetime, e.g. "1883-04-06T07:15:00" — naive story-time, never timezone-aware. */
   starts_at: string;
-  advances_on: ClockAdvanceSpec[];
+  /** Minutes a turn costs when nothing more specific (an exit's costs_minutes, the model's minutes_elapsed) applies. */
+  default_turn_cost_minutes: number;
+  phases: ClockPhaseSpec[];
+  deadline?: ClockDeadlineSpec;
 }
 
 export interface CanonSpec {
@@ -126,8 +183,22 @@ export interface NarratorSpec {
   extra_refusals: string[];
 }
 
+export interface WorldSpec {
+  setting: string;
+  register: string;
+  physics: string;
+  supernatural: string;
+  /** Illustrative, never exhaustive — a pattern for the model to generalize from, not a blocklist. */
+  absent: string[];
+  present: string[];
+  anachronism_response: string;
+  /** 0-10. How far the model may invent beyond what's declared; 0 = strictly in-frame, higher = more improvisation. */
+  weirdness: number;
+}
+
 export interface Quest {
   meta: MetaSpec;
+  world?: WorldSpec;
   clock: ClockSpec;
   canon: CanonSpec;
   characters: Record<string, CharacterSpec>;
@@ -135,6 +206,10 @@ export interface Quest {
   derived: Record<string, string>;
   scenes: SceneSpec[];
   endings: EndingSpec[];
+  /** Generic loss endings every quest inherits — a termination backstop, not part of the authored win/loss structure. Implicitly reachable from every scene via max_turns; never required to have an explicit path. */
+  universal_endings?: EndingSpec[];
+  /** Named worse-but-still-playable states a guarded_event or the clock deadline can fall into instead of blocking or dead-ending. */
+  degradations?: Record<string, DegradationSpec>;
   narrator: NarratorSpec;
 }
 
@@ -186,11 +261,14 @@ export function validateQuest(quest: Quest): ValidationResult {
   const declaredFlags = new Set(Object.keys(quest.flags ?? {}));
   const declaredDerived = new Set(Object.keys(quest.derived ?? {}));
   const declaredCharacters = new Set(Object.keys(quest.characters ?? {}));
-  const phases = new Set(quest.clock?.phases ?? []);
+  const phases = new Set((quest.clock?.phases ?? []).map((p) => p.name));
   const scenes = quest.scenes ?? [];
   const endings = quest.endings ?? [];
+  const universalEndings = quest.universal_endings ?? [];
   const sceneIds = new Set(scenes.map((s) => s.id));
-  const endingIds = new Set(endings.map((e) => e.id));
+  // Universal endings are valid targets for exit.to/beat.goto/on_fail.to/
+  // on_exhausted just like authored endings — the engine can land on either.
+  const endingIds = new Set([...endings, ...universalEndings].map((e) => e.id));
 
   const flagsRead = new Set<string>();
   const flagsSet = new Set<string>();
@@ -215,6 +293,9 @@ export function validateQuest(quest: Quest): ValidationResult {
     for (const beat of scene.beats ?? []) {
       checkSets(beat.sets ?? [], `beat at_turn ${beat.at_turn} (scene '${scene.id}') sets`);
     }
+  }
+  for (const [degId, degradation] of Object.entries(quest.degradations ?? {})) {
+    checkSets(degradation.sets ?? [], `degradation '${degId}' sets`);
   }
 
   // Resolve a single expression: check identifiers/character-refs against
@@ -271,15 +352,10 @@ export function validateQuest(quest: Quest): ValidationResult {
       errors.push(
         `requires_phase '${phase}' in ${context} is not one of the clock's declared phases (${[...phases].join(", ")})`
       );
-      return;
     }
-    const reachablePhases = new Set<string>([quest.clock.starts_at]);
-    for (const adv of quest.clock.advances_on ?? []) reachablePhases.add(adv.to);
-    if (!reachablePhases.has(phase)) {
-      errors.push(
-        `requires_phase '${phase}' in ${context} is never reached by clock.advances_on`
-      );
-    }
+    // No reachability check beyond that: v3's clock has no discrete
+    // "advance" triggers — every declared phase is reachable purely by
+    // enough story-time passing, so there's nothing else to verify here.
   }
 
   // derived formulas are expressions too, and their flag references count
@@ -299,6 +375,37 @@ export function validateQuest(quest: Quest): ValidationResult {
   const hasWinEnding = endings.some((e) => e.result === "win");
   if (hasWinEnding && (quest.canon?.secrets?.length ?? 0) === 0) {
     errors.push("canon.secrets is empty but the quest has a win ending");
+  }
+
+  // clock: phase time format, deadline sanity. Same-format ISO 8601
+  // datetimes compare correctly as plain strings — no parsing needed for
+  // the starts_at/deadline.at ordering check.
+  for (const phase of quest.clock?.phases ?? []) {
+    if (!/^\d{2}:\d{2}$/.test(phase.until)) {
+      errors.push(`clock.phases '${phase.name}'.until = '${phase.until}' is not a valid HH:MM time`);
+    }
+  }
+  if (quest.clock?.deadline) {
+    const { at, on_reached } = quest.clock.deadline;
+    if (quest.clock.starts_at && at <= quest.clock.starts_at) {
+      errors.push(`clock.deadline.at '${at}' is not after clock.starts_at '${quest.clock.starts_at}'`);
+    }
+    const mode = on_reached?.mode ?? "degrade";
+    if (mode !== "degrade" && mode !== "ending") {
+      errors.push(`clock.deadline.on_reached.mode must be 'degrade' or 'ending', got '${mode}'`);
+    } else if (mode === "ending") {
+      if (!on_reached.ending) {
+        errors.push(`clock.deadline.on_reached.mode is 'ending' but no 'ending' field is given`);
+      } else if (!endingIds.has(on_reached.ending)) {
+        errors.push(`clock.deadline.on_reached.ending '${on_reached.ending}' does not name a declared ending`);
+      }
+    } else {
+      if (!on_reached.degrade) {
+        errors.push(`clock.deadline.on_reached.mode is 'degrade' but no 'degrade' field is given`);
+      } else if (!(quest.degradations ?? {})[on_reached.degrade]) {
+        errors.push(`clock.deadline.on_reached.degrade '${on_reached.degrade}' does not name a declared degradation`);
+      }
+    }
   }
 
   // Build reachability graph over scenes + endings.
@@ -338,10 +445,22 @@ export function validateQuest(quest: Quest): ValidationResult {
       }
     }
 
-    // guarded_events — same gating mechanism as exits, no scene transition of their own
+    // guarded_events — same gating mechanism as exits. on_allowed.degrade is
+    // the one way a guarded event does change reachability: falling into a
+    // degradation instead of blocking or dead-ending forever.
     for (const ge of scene.guarded_events ?? []) {
       if (ge.requires) {
         checkGatingExpression(ge.requires, `guarded_event '${ge.id}' (scene '${scene.id}') requires`);
+      }
+      if (ge.on_allowed?.degrade && !(quest.degradations ?? {})[ge.on_allowed.degrade]) {
+        errors.push(
+          `guarded_event '${ge.id}' (scene '${scene.id}') on_allowed.degrade '${ge.on_allowed.degrade}' does not name a declared degradation`
+        );
+      }
+      if (ge.on_allowed?.goto) {
+        if (checkTarget(ge.on_allowed.goto, "guarded_event.on_allowed.goto", `scene '${scene.id}' guarded_event '${ge.id}'`)) {
+          addEdge(scene.id, ge.on_allowed.goto);
+        }
       }
     }
 
@@ -374,9 +493,106 @@ export function validateQuest(quest: Quest): ValidationResult {
       }
     }
 
+    // pressure — on_exhausted must name a guarded_event actually declared on
+    // this same scene, since that's the only thing the engine knows how to
+    // force through (reusing the same on_allowed resolution a model-insisted
+    // degrade uses).
+    if (scene.pressure) {
+      const target = (scene.guarded_events ?? []).find((ge) => ge.id === scene.pressure!.on_exhausted);
+      if (!target) {
+        errors.push(
+          `pressure.on_exhausted '${scene.pressure.on_exhausted}' (scene '${scene.id}') does not name a guarded_events id declared on this scene`
+        );
+      }
+
+      // Idle turns can never outrun the scene's own turn count — every idle
+      // turn is also a scene turn — so a beat or max_turns at or before
+      // pressure's own exhaustion point always fires first, and pressure's
+      // hard exhaustion (its on_exhausted force) can never actually be
+      // reached, no matter how the player plays. The nudges still show
+      // (they're keyed to the same always-reachable count); only the force
+      // becomes dead code, which is easy to miss since the quest still
+      // validates and plays.
+      const exhaustionTurn = scene.pressure.idle_after_turns * scene.pressure.escalation.length;
+      for (const beat of scene.beats ?? []) {
+        if (beat.at_turn <= exhaustionTurn) {
+          warnings.push(
+            `Scene '${scene.id}' pressure exhausts at turn ${exhaustionTurn}, but beat at_turn ${beat.at_turn} fires no later — pressure's on_exhausted can never actually be reached`
+          );
+        }
+      }
+      const effectiveMaxTurns = scene.max_turns ?? 25;
+      if (exhaustionTurn > effectiveMaxTurns) {
+        warnings.push(
+          `Scene '${scene.id}' pressure exhausts at turn ${exhaustionTurn}, but max_turns is ${effectiveMaxTurns} — pressure's on_exhausted can never actually be reached`
+        );
+      }
+    }
+
+    // on_exhausted — the max_turns termination backstop. Every scene has a
+    // max_turns (default 25) whether declared or not, so every scene needs
+    // somewhere to go when it's exceeded: either its own on_exhausted, or a
+    // quest-wide universal_ending to fall back on.
+    if (scene.on_exhausted) {
+      if (checkTarget(scene.on_exhausted, "on_exhausted", `scene '${scene.id}'`)) {
+        addEdge(scene.id, scene.on_exhausted);
+      }
+    } else if (universalEndings.length === 0) {
+      errors.push(
+        `Scene '${scene.id}' has no on_exhausted and the quest declares no universal_endings — nothing catches this scene if max_turns is ever exceeded`
+      );
+    }
+
     // scene with no exits and no on_fail
     if ((scene.exits ?? []).length === 0 && !scene.on_fail) {
       warnings.push(`Scene '${scene.id}' has no exits and no on_fail`);
+    }
+
+    // a scene busy enough to drift in deserves pressure to pull a player back
+    if (!scene.pressure && ((scene.exits ?? []).length > 4 || (scene.discoverable ?? []).length > 4)) {
+      warnings.push(`Scene '${scene.id}' has more than four exits or discoverables but no pressure declared`);
+    }
+  }
+
+  // degradations: a still_winnable:false path must name somewhere it
+  // eventually ends up, or it's exactly bug #2 — a branch that can neither
+  // win nor terminate. unlocks must point at exits that actually exist
+  // somewhere in the quest.
+  const allExitIds = new Set(scenes.flatMap((s) => (s.exits ?? []).map((e) => e.id)));
+  const referencedDegradations = new Set<string>();
+  for (const ge of scenes.flatMap((s) => s.guarded_events ?? [])) {
+    if (ge.on_allowed?.degrade) referencedDegradations.add(ge.on_allowed.degrade);
+  }
+  if (quest.clock?.deadline?.on_reached?.degrade) {
+    referencedDegradations.add(quest.clock.deadline.on_reached.degrade);
+  }
+  for (const [degId, degradation] of Object.entries(quest.degradations ?? {})) {
+    if (degradation.still_winnable === false) {
+      if (!degradation.ending) {
+        errors.push(`Degradation '${degId}' has still_winnable: false but names no ending`);
+      } else if (!endingIds.has(degradation.ending)) {
+        errors.push(`Degradation '${degId}' names ending '${degradation.ending}', which does not exist`);
+      }
+    }
+    for (const exitId of degradation.unlocks ?? []) {
+      if (!allExitIds.has(exitId)) {
+        errors.push(`Degradation '${degId}' unlocks exit '${exitId}', which does not exist in any scene`);
+      }
+    }
+    if (!referencedDegradations.has(degId)) {
+      warnings.push(
+        `Degradation '${degId}' is declared but never referenced by any guarded_event.on_allowed.degrade or clock.deadline.on_reached.degrade`
+      );
+    }
+  }
+
+  // universal_endings are an implicit edge from every scene (the max_turns
+  // backstop can land on one even without on_exhausted declared) — wire
+  // that into the reachability graph so they don't need bespoke exits, and
+  // so their presence keeps every scene's termination story genuinely covered.
+  if (universalEndings.length > 0) {
+    for (const scene of scenes) {
+      if (!scene.on_exhausted) addEdge(scene.id, universalEndings[0]!.id);
     }
   }
 
@@ -482,6 +698,15 @@ export function validateQuest(quest: Quest): ValidationResult {
         `Scene '${scene.id}' has character '${charId}' present and a discoverable ('${loadBearingDiscoverable.id}') that sets a flag required elsewhere, but no guarded_events — the character could be narrated as leaving/dismissed with nothing gating it`
       );
     }
+  }
+
+  // world.absent needs a pattern to generalize from, not a checklist — too
+  // short and the model has nothing to extrapolate an era's missing
+  // technology/attitudes from.
+  if (quest.world && quest.world.absent.length < 3) {
+    warnings.push(
+      `world.absent has only ${quest.world.absent.length} entries — the model needs a pattern to generalize from, not a checklist (aim for at least 3)`
+    );
   }
 
   return { errors, warnings };

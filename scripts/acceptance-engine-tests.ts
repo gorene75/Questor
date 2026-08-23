@@ -72,6 +72,122 @@ function testValidator(baseQuest: Quest) {
     found3,
     `errors: ${JSON.stringify(r3.errors.filter((e) => e.includes("win ending")))}`
   );
+
+  // ---- stage 6: clock.deadline.on_reached modes, degradations ----
+
+  const endingModeNoEnding = structuredClone(baseQuest);
+  delete endingModeNoEnding.clock.deadline!.on_reached.ending;
+  endingModeNoEnding.clock.deadline!.on_reached.mode = "ending";
+  const r4 = validateQuest(endingModeNoEnding);
+  const found4 = r4.errors.some((e) => e.includes("mode is 'ending' but no 'ending' field is given"));
+  report(
+    "1d",
+    "validator catches deadline.on_reached.mode 'ending' with no 'ending' field",
+    found4,
+    `errors: ${JSON.stringify(r4.errors.filter((e) => e.includes("on_reached")))}`
+  );
+
+  const degradeModeUndeclared = structuredClone(baseQuest);
+  degradeModeUndeclared.clock.deadline!.on_reached = { mode: "degrade", degrade: "totally_undeclared_degradation" };
+  const r5 = validateQuest(degradeModeUndeclared);
+  const found5 = r5.errors.some(
+    (e) => e.includes("totally_undeclared_degradation") && e.includes("does not name a declared degradation")
+  );
+  report(
+    "1e",
+    "validator catches clock.deadline.on_reached.degrade naming an undeclared degradation",
+    found5,
+    `errors: ${JSON.stringify(r5.errors.filter((e) => e.includes("totally_undeclared_degradation")))}`
+  );
+
+  const notWinnableNoEnding = structuredClone(baseQuest);
+  notWinnableNoEnding.degradations!.no_account!.still_winnable = false;
+  delete notWinnableNoEnding.degradations!.no_account!.ending;
+  const r6 = validateQuest(notWinnableNoEnding);
+  const found6 = r6.errors.some((e) => e.includes("no_account") && e.includes("still_winnable: false but names no ending"));
+  report(
+    "1f",
+    "validator catches a still_winnable:false degradation that names no ending",
+    found6,
+    `errors: ${JSON.stringify(r6.errors.filter((e) => e.includes("no_account")))}`
+  );
+
+  const undeclaredOnAllowedDegrade = structuredClone(baseQuest);
+  undeclaredOnAllowedDegrade.scenes[0]!.guarded_events![0]!.on_allowed = { degrade: "totally_undeclared_degradation_2" };
+  const r7 = validateQuest(undeclaredOnAllowedDegrade);
+  const found7 = r7.errors.some(
+    (e) => e.includes("totally_undeclared_degradation_2") && e.includes("does not name a declared degradation")
+  );
+  report(
+    "1g",
+    "validator catches guarded_event.on_allowed.degrade naming an undeclared degradation",
+    found7,
+    `errors: ${JSON.stringify(r7.errors.filter((e) => e.includes("totally_undeclared_degradation_2")))}`
+  );
+
+  const danglingUnlock = structuredClone(baseQuest);
+  danglingUnlock.degradations!.no_account!.unlocks = ["totally_nonexistent_exit"];
+  const r8 = validateQuest(danglingUnlock);
+  const found8 = r8.errors.some((e) => e.includes("totally_nonexistent_exit") && e.includes("does not exist in any scene"));
+  report(
+    "1h",
+    "validator catches a degradation.unlocks entry naming an exit that doesn't exist",
+    found8,
+    `errors: ${JSON.stringify(r8.errors.filter((e) => e.includes("totally_nonexistent_exit")))}`
+  );
+
+  // ---- stage 7: pressure ----
+
+  const pressureBadTarget = structuredClone(baseQuest);
+  pressureBadTarget.scenes.find((s) => s.id === "s1_baker_street")!.pressure = {
+    idle_after_turns: 3,
+    escalation: ["a", "b", "c"],
+    on_exhausted: "totally_undeclared_guarded_event",
+  };
+  const r9 = validateQuest(pressureBadTarget);
+  const found9 = r9.errors.some(
+    (e) => e.includes("totally_undeclared_guarded_event") && e.includes("does not name a guarded_events id declared on this scene")
+  );
+  report(
+    "1i",
+    "validator catches pressure.on_exhausted naming a guarded_event not declared on that scene",
+    found9,
+    `errors: ${JSON.stringify(r9.errors.filter((e) => e.includes("totally_undeclared_guarded_event")))}`
+  );
+
+  const busySceneNoPressure = structuredClone(baseQuest);
+  const commons = busySceneNoPressure.scenes.find((s) => s.id === "s3_commons")!;
+  for (let i = 0; i < 5; i++) {
+    commons.discoverable.push({ id: `test_filler_discoverable_${i}`, trigger: "test", reveal: "test" });
+  }
+  const r10 = validateQuest(busySceneNoPressure);
+  const found10 = r10.warnings.some((w) => w.includes("s3_commons") && w.includes("no pressure declared"));
+  report(
+    "1j",
+    "validator warns when a scene has more than four discoverables and no pressure",
+    found10,
+    `warnings: ${JSON.stringify(r10.warnings.filter((w) => w.includes("s3_commons")))}`
+  );
+
+  // Regression test for the exact bug found live: s1's pressure originally
+  // exhausted at turn 9 (idle_after_turns 3 * 3 lines), the same turn as its
+  // beat — since idle turns can never outrun the scene's own turn count, the
+  // beat always won the race and pressure's on_exhausted force was
+  // unreachable by construction. Reproduce that shape directly.
+  const pressurePreemptedByBeat = structuredClone(baseQuest);
+  const s1ForCollision = pressurePreemptedByBeat.scenes.find((s) => s.id === "s1_baker_street")!;
+  s1ForCollision.pressure!.idle_after_turns = 3; // 3 * 3 lines = 9, same as the beat below
+  s1ForCollision.beats = [{ at_turn: 9, event: "test", goto: "s2_intrusion", once: true }];
+  const r11 = validateQuest(pressurePreemptedByBeat);
+  const found11 = r11.warnings.some(
+    (w) => w.includes("s1_baker_street") && w.includes("pressure exhausts at turn 9") && w.includes("beat at_turn 9")
+  );
+  report(
+    "1k",
+    "validator warns when pressure's exhaustion turn lands at or after a same-scene beat's at_turn, making on_exhausted unreachable",
+    found11,
+    `warnings: ${JSON.stringify(r11.warnings.filter((w) => w.includes("s1_baker_street") && w.includes("pressure exhausts")))}`
+  );
 }
 
 // ---- Test 3: to_surrey impossible before heard_the_account ----
@@ -85,7 +201,6 @@ async function testSurreyGate(client: DbClient) {
         narration: "You set off for Stoke Moran at once.",
         exit_id: "to_surrey",
         discovered: [],
-        flags_set: [],
         disposition_changes: [],
         invented: [],
         refused: false,
@@ -94,7 +209,6 @@ async function testSurreyGate(client: DbClient) {
         narration: "You set off for Stoke Moran at once, undeterred.",
         exit_id: "to_surrey",
         discovered: [],
-        flags_set: [],
         disposition_changes: [],
         invented: [],
         refused: false,
@@ -125,7 +239,6 @@ async function testDispositionGatedDiscoverable(client: DbClient) {
         narration: "She tells you all about the whistle in the night.",
         exit_id: null,
         discovered: ["the_whistle"],
-        flags_set: ["knows_the_whistle"],
         disposition_changes: [],
         invented: [],
         refused: false,
@@ -134,7 +247,6 @@ async function testDispositionGatedDiscoverable(client: DbClient) {
         narration: "She tells you all about the whistle in the night, again.",
         exit_id: null,
         discovered: ["the_whistle"],
-        flags_set: ["knows_the_whistle"],
         disposition_changes: [],
         invented: [],
         refused: false,
@@ -163,12 +275,15 @@ async function testRoylottNeverRises(client: DbClient) {
   await commitTurn(client, session.id, {
     current_scene: "s2_intrusion",
     phase: session.phase,
+    story_time: session.story_time,
     flags: session.flags,
     characters: session.characters,
     invented: session.invented,
     transcript: session.transcript,
     scene_turn_count: 0,
     fired_beats: session.fired_beats,
+    active_degradations: session.active_degradations,
+    idle_turns: session.idle_turns,
   });
 
   const model = scriptedModel(
@@ -178,7 +293,6 @@ async function testRoylottNeverRises(client: DbClient) {
         narration: "Roylott seems almost to soften at your calm reason.",
         exit_id: null,
         discovered: [],
-        flags_set: [],
         disposition_changes: [{ character: "roylott", direction: "up", reason: "player was reasonable and charming" }],
         invented: [],
         refused: false,
@@ -205,6 +319,7 @@ async function testStrikeWithoutAllClues(client: DbClient) {
   await commitTurn(client, session.id, {
     current_scene: "s7_watch",
     phase: "night",
+    story_time: "1883-04-06T21:00:00",
     // Only two of the three s5 clues, and no s6 clue at all — understands_room must be false.
     flags: { ...session.flags, saw_dummy_bellpull: true, saw_clamped_bed: true },
     characters: session.characters,
@@ -212,6 +327,8 @@ async function testStrikeWithoutAllClues(client: DbClient) {
     transcript: session.transcript,
     scene_turn_count: 0,
     fired_beats: session.fired_beats,
+    active_degradations: session.active_degradations,
+    idle_turns: session.idle_turns,
   });
 
   const model = scriptedModel(
@@ -221,7 +338,6 @@ async function testStrikeWithoutAllClues(client: DbClient) {
         narration: "You strike out in the dark at the ventilator.",
         exit_id: "strike_true",
         discovered: [],
-        flags_set: [],
         disposition_changes: [],
         invented: [],
         refused: false,
@@ -230,7 +346,6 @@ async function testStrikeWithoutAllClues(client: DbClient) {
         narration: "You strike out in the dark at the ventilator, again.",
         exit_id: "strike_true",
         discovered: [],
-        flags_set: [],
         disposition_changes: [],
         invented: [],
         refused: false,
@@ -257,12 +372,15 @@ async function testLampReachesTooLate(client: DbClient) {
   await commitTurn(client, session.id, {
     current_scene: "s7_watch",
     phase: "night",
+    story_time: "1883-04-06T21:00:00",
     flags: session.flags,
     characters: session.characters,
     invented: session.invented,
     transcript: session.transcript,
     scene_turn_count: 0,
     fired_beats: session.fired_beats,
+    active_degradations: session.active_degradations,
+    idle_turns: session.idle_turns,
   });
 
   const model = scriptedModel(
@@ -272,7 +390,6 @@ async function testLampReachesTooLate(client: DbClient) {
         narration: "You strike a match and light the lamp.",
         exit_id: "light_lamp",
         discovered: [],
-        flags_set: [],
         disposition_changes: [],
         invented: [],
         refused: false,
