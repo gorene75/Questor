@@ -4,7 +4,7 @@
 
 import type { CharacterSpec, GuardedEventSpec, Quest, SceneSpec } from "./validator.ts";
 import { evaluateExpression, type ExprContext } from "./expr.ts";
-import { addMinutes, derivePhase, hasReached } from "./clock.ts";
+import { addMinutes, derivePhaseFromProgress } from "./clock.ts";
 import { buildPromptParts, type SessionState, type TurnRecord } from "./prompt.ts";
 import { selectModel, type ModelAdapter, type ModelEnv } from "./models/index.ts";
 import {
@@ -14,6 +14,7 @@ import {
   logTurn,
   type DbClient,
   type Session,
+  type SessionCheckpoint,
   type SessionStatus,
   type TurnValidationResult,
 } from "./db.ts";
@@ -32,7 +33,7 @@ export interface ModelTurnResponse {
   disposition_changes: DispositionChange[];
   invented: string[];
   refused: boolean;
-  /** A suggestion, not authoritative — the engine prefers an exit's costs_minutes when one applies, and falls back to this only for free-form turns. */
+  /** Pure narrative flavor, never gating — only used at all when the quest configures optional clock.story_time, and even then only as a fallback behind an exit's own costs_minutes. Phase and any deadline are driven entirely by clock.advances_on, never by this. */
   minutes_elapsed?: number;
 }
 
@@ -299,7 +300,8 @@ function findDegradeEligibleGuardedEvent(attempt: Attempt, scene: SceneSpec): Gu
 interface NextState {
   current_scene: string;
   phase: string;
-  story_time: string;
+  progress_events: string[];
+  story_time: string | null;
   flags: Record<string, boolean>;
   characters: Record<string, string>;
   invented: string[];
@@ -311,6 +313,8 @@ interface NextState {
   status: SessionStatus;
   ending_id: string | null;
   ending_trigger: string | null;
+  /** Set only when this turn entered a scene whose act differs from the one just left — undefined otherwise, meaning "leave the session's existing checkpoint alone." */
+  checkpoint: SessionCheckpoint | undefined;
 }
 
 function clampedStep(character: CharacterSpec, currentLevel: string, direction: "up" | "down"): string {
@@ -353,6 +357,21 @@ function computeNextState(
     const takenExit = (scene.exits ?? []).find((e) => e.id === response.exit_id);
     for (const f of takenExit?.sets ?? []) flags[f] = true;
   }
+
+  // Progress counter — the whole clock now runs on this, not on elapsed
+  // turns or minutes. Only a declared clock.advances_on event moves it, and
+  // only the first time it happens; a thorough player asking twenty
+  // questions that never trigger a *new* one doesn't advance the clock at
+  // all. Exits and discoverables are marked here; beats mark themselves
+  // in their own loop below, since they haven't fired yet at this point.
+  const progressEvents = [...session.progress_events];
+  function markProgress(eventId: string) {
+    if (quest.clock.advances_on.includes(eventId) && !progressEvents.includes(eventId)) {
+      progressEvents.push(eventId);
+    }
+  }
+  for (const discoveredId of response.discovered) markProgress(discoveredId);
+  if (response.exit_id !== null) markProgress(response.exit_id);
 
   // guarded_events.on_allowed.degrade — the event was let through in a worse
   // state rather than blocked or dead-ended. Applied once per session per
@@ -440,23 +459,22 @@ function computeNextState(
     }
   }
 
-  // Minutes elapsed this turn: an authored costs_minutes on the taken exit
-  // wins (deterministic, author-controlled — travel always costs what the
-  // author said); failing that, the model's own minutes_elapsed estimate,
-  // clamped to a sane range so a wild guess can't skip hours of story-time
-  // in one exchange; failing that, the quest's default_turn_cost_minutes.
-  let minutesElapsed: number;
-  const takenExitForCost = response.exit_id !== null ? (scene.exits ?? []).find((e) => e.id === response.exit_id) : undefined;
-  if (takenExitForCost?.costs_minutes !== undefined) {
-    minutesElapsed = takenExitForCost.costs_minutes;
-  } else if (response.minutes_elapsed !== undefined) {
-    minutesElapsed = Math.min(response.minutes_elapsed, 60);
-  } else {
-    minutesElapsed = quest.clock.default_turn_cost_minutes;
+  // story_time: purely optional narrative flavor, only touched at all when
+  // the quest configures clock.story_time. Never read back for phase or a
+  // deadline — those come entirely from progressEvents.length below.
+  let storyTime: string | null = session.story_time;
+  if (quest.clock.story_time) {
+    let minutesElapsed: number;
+    const takenExitForCost = response.exit_id !== null ? (scene.exits ?? []).find((e) => e.id === response.exit_id) : undefined;
+    if (takenExitForCost?.costs_minutes !== undefined) {
+      minutesElapsed = takenExitForCost.costs_minutes;
+    } else if (response.minutes_elapsed !== undefined) {
+      minutesElapsed = Math.min(response.minutes_elapsed, 60);
+    } else {
+      minutesElapsed = quest.clock.story_time.default_turn_cost_minutes;
+    }
+    storyTime = addMinutes(storyTime!, minutesElapsed);
   }
-
-  let storyTime = addMinutes(session.story_time, minutesElapsed);
-  let phase = derivePhase(quest.clock.phases, storyTime);
 
   const sceneAfterExit = quest.scenes.find((s) => s.id === currentScene);
   if (sceneAfterExit) {
@@ -467,9 +485,9 @@ function computeNextState(
       if (sceneTurnCount < beat.at_turn) continue;
 
       for (const f of beat.sets ?? []) flags[f] = true;
-      if (beat.costs_minutes) {
-        storyTime = addMinutes(storyTime, beat.costs_minutes);
-        phase = derivePhase(quest.clock.phases, storyTime);
+      if (beat.id) markProgress(beat.id);
+      if (beat.costs_minutes && quest.clock.story_time) {
+        storyTime = addMinutes(storyTime!, beat.costs_minutes);
       }
       if (beat.once ?? true) firedBeats.push(key);
       if (beat.goto) {
@@ -488,6 +506,11 @@ function computeNextState(
     }
   }
 
+  // Phase is derived fresh here, once every progress-contributing event this
+  // turn (discoverables, the exit, and any beats above) has had its chance
+  // to advance the counter.
+  const phase = derivePhaseFromProgress(quest.clock.phases, progressEvents.length);
+
   // clock.deadline — the whole-quest backstop, checked before the
   // scene-local max_turns one below. `on_reached.mode` is a per-quest
   // choice: "ending" forces a named ending outright (and, like beats/on_fail,
@@ -496,10 +519,11 @@ function computeNextState(
   // a named degradation and lets the story continue, so max_turns still
   // needs to apply normally on every later turn — nothing else guarantees
   // termination for a session that keeps playing past its deadline.
-  // Checked against the final story_time, after exits and any beat
-  // costs_minutes have already been folded in.
+  // Checked against the progress counter, in plot-relevant events, not real
+  // time or turn count — a thorough player who triggers no new advances_on
+  // event never moves this at all.
   let deadlineForcedEnding = false;
-  if (quest.clock.deadline && hasReached(storyTime, quest.clock.deadline.at)) {
+  if (quest.clock.deadline && progressEvents.length >= quest.clock.deadline.at) {
     const onReached = quest.clock.deadline.on_reached;
     const mode = onReached.mode ?? "degrade";
     if (mode === "ending") {
@@ -558,9 +582,40 @@ function computeNextState(
   // conceptually restarts on any scene change.
   const finalIdleTurns = currentScene === session.current_scene ? idleTurns : 0;
 
+  // checkpoint: written the moment play enters a scene whose act differs
+  // from the one just left (undeclared act counts as its own "no act"
+  // bucket, distinct from any named one). Never written for an ending —
+  // there's nothing to rewind *to* there. A full snapshot, not just the
+  // fields most obviously narrative (flags/characters/degradations/
+  // invented): transcript and progress_events are included too, since a
+  // stale transcript would leak the failed attempt straight back into the
+  // next prompt via {{HISTORY}}, defeating the point of a clean rewind.
+  let checkpoint: SessionCheckpoint | undefined;
+  if (currentScene !== session.current_scene) {
+    const previousAct = quest.scenes.find((s) => s.id === session.current_scene)?.act;
+    const enteredScene = quest.scenes.find((s) => s.id === currentScene);
+    if (enteredScene && enteredScene.act !== previousAct) {
+      checkpoint = {
+        scene: currentScene,
+        phase,
+        progress_events: progressEvents,
+        story_time: storyTime,
+        flags,
+        characters,
+        invented,
+        transcript,
+        scene_turn_count: sceneTurnCount,
+        fired_beats: firedBeats,
+        active_degradations: activeDegradations,
+        idle_turns: finalIdleTurns,
+      };
+    }
+  }
+
   return {
     current_scene: currentScene,
     phase,
+    progress_events: progressEvents,
     story_time: storyTime,
     flags,
     characters,
@@ -573,6 +628,7 @@ function computeNextState(
     status,
     ending_id: endingId,
     ending_trigger: endingTrigger,
+    checkpoint,
   };
 }
 
@@ -693,6 +749,7 @@ export async function processTurn(params: {
   const updatedSession = await commitTurn(client, sessionId, {
     current_scene: next.current_scene,
     phase: next.phase,
+    progress_events: next.progress_events,
     story_time: next.story_time,
     flags: next.flags,
     characters: next.characters,
@@ -705,6 +762,7 @@ export async function processTurn(params: {
     status: next.status,
     ending_id: next.ending_id,
     ending_trigger: next.ending_trigger,
+    checkpoint: next.checkpoint,
   });
   const dbCommitMs = Date.now() - commitStart;
 
@@ -729,4 +787,52 @@ export async function processTurn(params: {
     refused: response.refused,
     session: updatedSession,
   };
+}
+
+// ---- rewind ----
+
+/**
+ * Restores a session to its most recent act-entry checkpoint — a clean
+ * rewind, not a partial one. Every field the model's next prompt would read
+ * (transcript for {{HISTORY}}, invented for {{INVENTED}}, flags/characters/
+ * degradations for scene state, progress_events/fired_beats/scene_turn_count/
+ * idle_turns for the engine's own bookkeeping) is overwritten with the
+ * checkpoint's stored values, and status/ending are reset to active/null so
+ * the session is playable again. Nothing about the failed attempt survives
+ * anywhere the model or the engine would ever read it back — the model has
+ * no memory beyond what's re-fed from session state each turn, so restoring
+ * this row *is* restoring its memory, completely.
+ *
+ * Manual and explicit only, for now: callers decide when a loss warrants
+ * offering this, not the engine. There's no rule yet for which losses
+ * should and shouldn't.
+ */
+export async function rewindToCheckpoint(client: DbClient, sessionId: string): Promise<Session> {
+  const session = await loadSession(client, sessionId);
+  if (!session) throw new Error(`No session found with id '${sessionId}'`);
+  if (!session.checkpoint) {
+    throw new Error(`Session '${sessionId}' has no checkpoint to rewind to`);
+  }
+  const cp = session.checkpoint;
+
+  return commitTurn(client, sessionId, {
+    current_scene: cp.scene,
+    phase: cp.phase,
+    progress_events: cp.progress_events,
+    story_time: cp.story_time,
+    flags: cp.flags,
+    characters: cp.characters,
+    invented: cp.invented,
+    transcript: cp.transcript,
+    scene_turn_count: cp.scene_turn_count,
+    fired_beats: cp.fired_beats,
+    active_degradations: cp.active_degradations,
+    idle_turns: cp.idle_turns,
+    status: "active",
+    ending_id: null,
+    ending_trigger: null,
+    // checkpoint itself is left untouched (commitTurn's undefined-means-
+    // unchanged convention) — a second failed attempt at the same act
+    // should still be able to rewind back to this same point.
+  });
 }

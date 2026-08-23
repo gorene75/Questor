@@ -4,7 +4,7 @@
 
 import { createDbClient, createSession, loadQuestByVersion, loadSession } from "./db.ts";
 import type { WorkersAiBinding } from "./models/index.ts";
-import { processTurn } from "./turn.ts";
+import { processTurn, rewindToCheckpoint } from "./turn.ts";
 
 interface Env {
   SUPABASE_URL: string;
@@ -23,7 +23,7 @@ function json(body: unknown, status = 200): Response {
 
 function errorStatus(message: string): number {
   if (message.includes("not found")) return 404;
-  if (message.includes("already")) return 409;
+  if (message.includes("already") || message.includes("no checkpoint")) return 409;
   return 500;
 }
 
@@ -85,6 +85,22 @@ async function handleGetSession(sessionId: string, env: Env): Promise<Response> 
   return json(session);
 }
 
+// Manual and explicit only, for now — nothing auto-triggers this on a loss.
+// Callers (or a human deciding for them) choose when a checkpoint is worth
+// offering; the engine doesn't yet have a rule for which losses should.
+async function handleRewind(sessionId: string, env: Env): Promise<Response> {
+  const client = createDbClient(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY);
+  const session = await rewindToCheckpoint(client, sessionId);
+  const questRow = await loadQuestByVersion(client, session.quest_id, session.quest_version);
+  const scene = questRow?.graph.scenes.find((s) => s.id === session.current_scene);
+
+  return json({
+    session_id: session.id,
+    current_scene: session.current_scene,
+    narration: scene?.returns_with ?? scene?.opens_with ?? "",
+  });
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -95,6 +111,10 @@ export default {
       }
       if (request.method === "POST" && url.pathname === "/turn") {
         return await handleTurn(request, env);
+      }
+      const rewindMatch = url.pathname.match(/^\/session\/([^/]+)\/rewind$/);
+      if (request.method === "POST" && rewindMatch) {
+        return await handleRewind(rewindMatch[1]!, env);
       }
       const sessionMatch = url.pathname.match(/^\/session\/([^/]+)$/);
       if (request.method === "GET" && sessionMatch) {

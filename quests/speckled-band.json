@@ -32,17 +32,30 @@
   },
 
   "clock": {
-    "starts_at": "1883-04-06T07:15:00",
-    "default_turn_cost_minutes": 5,
+    "advances_on": [
+      "the_death",
+      "to_commons",
+      "the_arithmetic",
+      "to_surrey",
+      "the_wall",
+      "bellpull",
+      "the_bed",
+      "ventilator",
+      "safe",
+      "milk",
+      "lash",
+      "chair",
+      "to_watch"
+    ],
     "phases": [
-      { "name": "morning", "until": "12:00" },
-      { "name": "afternoon", "until": "18:00" },
-      { "name": "dusk", "until": "20:30" },
-      { "name": "night", "until": "05:00" }
+      { "name": "morning", "until": 1 },
+      { "name": "afternoon", "until": 4 },
+      { "name": "dusk", "until": 10 },
+      { "name": "night", "until": 999 }
     ],
     "deadline": {
-      "at": "1883-04-07T03:00:00",
-      "meaning": "Whatever killed Julia comes for Helen.",
+      "at": 11,
+      "meaning": "Whatever killed Julia comes for Helen. Thorough investigation of what the case actually needs never costs you this — only piling on optional detours past what the case requires does.",
       "on_reached": { "mode": "ending", "ending": "e_too_late" }
     }
   },
@@ -250,8 +263,8 @@
         }
       ],
       "exits": [
-        { "id": "to_commons", "when": "player decides to look into the will, the estate, or the money", "to": "s3_commons", "costs_minutes": 30 },
-        { "id": "to_surrey", "when": "player sets off for Stoke Moran", "requires": "ready_to_travel", "to": "s4_exterior", "costs_minutes": 180 }
+        { "id": "to_commons", "when": "player decides to look into the will, the estate, or the money", "to": "s3_commons" },
+        { "id": "to_surrey", "when": "player sets off for Stoke Moran", "requires": "ready_to_travel", "to": "s4_exterior" }
       ],
       "guarded_events": [
         {
@@ -315,8 +328,8 @@
         { "id": "the_arithmetic", "trigger": "reads the will or works out the figures", "reveal": "The motive, in plain numbers.", "sets": ["knows_the_will"] }
       ],
       "exits": [
-        { "id": "back_to_baker", "when": "player returns to Baker Street", "to": "s1_baker_street", "costs_minutes": 30 },
-        { "id": "to_surrey", "when": "player sets off for Stoke Moran", "requires": "ready_to_travel", "to": "s4_exterior", "costs_minutes": 180 }
+        { "id": "back_to_baker", "when": "player returns to Baker Street", "to": "s1_baker_street" },
+        { "id": "to_surrey", "when": "player sets off for Stoke Moran", "requires": "ready_to_travel", "to": "s4_exterior" }
       ]
     },
 
@@ -341,7 +354,7 @@
         { "id": "the_wall", "trigger": "examines the wall, the scaffolding, or the repairs", "reveal": "The stonework is untouched and needs no repair at all.", "sets": ["saw_sham_repairs"] }
       ],
       "exits": [
-        { "id": "to_bedroom", "when": "player goes in to see the bedroom", "to": "s5_bedroom", "costs_minutes": 5 }
+        { "id": "to_bedroom", "when": "player goes in to see the bedroom", "to": "s5_bedroom" }
       ]
     },
 
@@ -368,10 +381,9 @@
         { "id": "ventilator", "trigger": "examines or asks about the ventilator", "reveal": "It vents not to the open air but into the next room.", "sets": ["saw_ventilator"] }
       ],
       "exits": [
-        { "id": "to_roylott_room", "when": "player asks to see Roylott's room", "to": "s6_roylotts_room", "costs_minutes": 5 },
-        { "id": "wait_for_evening", "when": "player decides to wait for evening, pass the time until dusk, or wait for nightfall before the watch", "to": "s5_bedroom", "costs_minutes": 420 },
-        { "id": "to_watch", "when": "player arranges to keep watch here tonight", "requires_phase": "dusk", "to": "s7_watch", "costs_minutes": 190 },
-        { "id": "back_outside", "when": "player goes back out to the grounds", "to": "s4_exterior", "costs_minutes": 5 }
+        { "id": "to_roylott_room", "when": "player asks to see Roylott's room", "to": "s6_roylotts_room" },
+        { "id": "to_watch", "when": "player arranges to keep watch here tonight", "requires_phase": "dusk", "to": "s7_watch" },
+        { "id": "back_outside", "when": "player goes back out to the grounds", "to": "s4_exterior" }
       ],
       "guarded_events": [
         {
@@ -415,7 +427,7 @@
         { "id": "no_dog", "trigger": "asks about a dog", "reveal": "There is no dog. There never has been." }
       ],
       "exits": [
-        { "id": "back_to_bedroom", "when": "player leaves this room", "to": "s5_bedroom", "costs_minutes": 5 }
+        { "id": "back_to_bedroom", "when": "player leaves this room", "to": "s5_bedroom" }
       ],
       "guarded_events": [
         {

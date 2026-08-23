@@ -4,7 +4,7 @@
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Quest } from "./validator.ts";
 import type { TurnRecord } from "./prompt.ts";
-import { derivePhase } from "./clock.ts";
+import { derivePhaseFromProgress } from "./clock.ts";
 
 export type DbClient = SupabaseClient;
 
@@ -30,14 +30,42 @@ export interface QuestRow {
 
 export type SessionStatus = "active" | "won" | "lost";
 
+/**
+ * A full snapshot of narratively-relevant session state, written the moment
+ * play enters a scene whose `act` differs from the one just left. Deliberately
+ * broader than just flags/characters/degradations/invented: it also carries
+ * transcript, progress_events, fired_beats, scene_turn_count, and idle_turns,
+ * because a "clean rewind" means the model's effective memory (recentHistory,
+ * {{INVENTED}}, everything computeNextState reads) matches checkpoint time
+ * exactly — a stale transcript alone would leak the failed attempt straight
+ * back into the next prompt via {{HISTORY}}.
+ */
+export interface SessionCheckpoint {
+  /** The scene entered when this checkpoint was written — rewind resets current_scene to this. */
+  scene: string;
+  phase: string;
+  progress_events: string[];
+  story_time: string | null;
+  flags: Record<string, boolean>;
+  characters: Record<string, string>;
+  invented: string[];
+  transcript: TurnRecord[];
+  scene_turn_count: number;
+  fired_beats: string[];
+  active_degradations: string[];
+  idle_turns: number;
+}
+
 export interface Session {
   id: string;
   quest_id: string;
   quest_version: number;
   current_scene: string;
   phase: string;
-  /** ISO story-time, e.g. "1883-04-06T07:15:00" — the source of truth; phase is derived from it. */
-  story_time: string;
+  /** Distinct clock.advances_on event ids that have fired so far this session — phase and any deadline are derived entirely from this array's length ("progress"), never from elapsed turns or real time. */
+  progress_events: string[];
+  /** ISO story-time, e.g. "1883-04-06T07:15:00" — null unless the quest configures optional clock.story_time. Pure narrative flavor; never gates phase or a deadline. */
+  story_time: string | null;
   flags: Record<string, boolean>;
   characters: Record<string, string>;
   invented: string[];
@@ -54,6 +82,8 @@ export interface Session {
   ending_trigger: string | null;
   /** Model chosen for this session at creation, or null to use the env/vars default at play time. */
   model_name: string | null;
+  /** Most recent act-entry snapshot, or null if the quest declares no acts (or none has been entered yet). Overwritten on every new act entry — only ever the latest is kept. */
+  checkpoint: SessionCheckpoint | null;
   created_at: string;
   updated_at: string;
 }
@@ -110,8 +140,9 @@ export async function createSession(client: DbClient, questId: string, modelName
       quest_id: questRow.id,
       quest_version: questRow.version,
       current_scene: quest.meta.start_scene,
-      phase: derivePhase(quest.clock.phases, quest.clock.starts_at),
-      story_time: quest.clock.starts_at,
+      phase: derivePhaseFromProgress(quest.clock.phases, 0),
+      progress_events: [],
+      story_time: quest.clock.story_time ? quest.clock.story_time.starts_at : null,
       // Every declared flag starts at its declared default (false), not a
       // literally-empty object — src/expr.ts requires every flag referenced
       // by a `requires`/`derived` expression to be present in the context,
@@ -128,6 +159,25 @@ export async function createSession(client: DbClient, questId: string, modelName
       ending_id: null,
       ending_trigger: null,
       model_name: modelName,
+      // If the very first scene already declares an act, this is that act's
+      // entry too — write the checkpoint now, same as computeNextState would
+      // on any later act transition, so rewind is available from turn one.
+      checkpoint: quest.scenes.find((s) => s.id === quest.meta.start_scene)?.act
+        ? {
+            scene: quest.meta.start_scene,
+            phase: derivePhaseFromProgress(quest.clock.phases, 0),
+            progress_events: [],
+            story_time: quest.clock.story_time ? quest.clock.story_time.starts_at : null,
+            flags: { ...quest.flags },
+            characters: {},
+            invented: [],
+            transcript: [],
+            scene_turn_count: 0,
+            fired_beats: [],
+            active_degradations: [],
+            idle_turns: 0,
+          }
+        : null,
     })
     .select()
     .single();
@@ -146,7 +196,8 @@ export async function loadSession(client: DbClient, sessionId: string): Promise<
 export interface TurnCommitInput {
   current_scene: string;
   phase: string;
-  story_time: string;
+  progress_events: string[];
+  story_time: string | null;
   flags: Record<string, boolean>;
   characters: Record<string, string>;
   invented: string[];
@@ -159,6 +210,8 @@ export interface TurnCommitInput {
   status?: SessionStatus;
   ending_id?: string | null;
   ending_trigger?: string | null;
+  /** Only set when this turn entered a scene whose act differs from the one just left. Never cleared back to null by ordinary play — only overwritten by a later act entry, or reset explicitly by rewindToCheckpoint. */
+  checkpoint?: SessionCheckpoint | null;
 }
 
 /**
@@ -170,6 +223,7 @@ export async function commitTurn(client: DbClient, sessionId: string, input: Tur
   const update: Record<string, unknown> = {
     current_scene: input.current_scene,
     phase: input.phase,
+    progress_events: input.progress_events,
     story_time: input.story_time,
     flags: input.flags,
     characters: input.characters,
@@ -184,6 +238,7 @@ export async function commitTurn(client: DbClient, sessionId: string, input: Tur
   if (input.status !== undefined) update.status = input.status;
   if (input.ending_id !== undefined) update.ending_id = input.ending_id;
   if (input.ending_trigger !== undefined) update.ending_trigger = input.ending_trigger;
+  if (input.checkpoint !== undefined) update.checkpoint = input.checkpoint;
 
   const { data, error } = await client.from("sessions").update(update).eq("id", sessionId).select().single();
 

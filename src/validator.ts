@@ -42,7 +42,7 @@ export interface ExitSpec {
   requires_phase?: string;
   to: string;
   sets?: string[];
-  /** Minutes the clock advances when this exit is taken. Authored, not model-estimated — falls back to the model's minutes_elapsed, then clock.default_turn_cost_minutes, when unset. */
+  /** Pure narrative flavor — only meaningful when clock.story_time is configured, and never gates anything. Taking this exit is real clock progress only if its id also appears in clock.advances_on. */
   costs_minutes?: number;
 }
 
@@ -52,8 +52,10 @@ export interface BeatSpec {
   goto?: string;
   sets?: string[];
   once?: boolean;
-  /** Minutes the clock advances when this beat fires, in addition to whatever the turn itself already cost. */
+  /** Pure narrative flavor — only meaningful when clock.story_time is configured, and never gates anything. */
   costs_minutes?: number;
+  /** Optional id so this beat can be named in clock.advances_on — beats have no id otherwise, unlike exits and discoverables. */
+  id?: string;
 }
 
 export interface OnFailSpec {
@@ -118,6 +120,8 @@ export interface SceneSpec {
   on_exhausted?: string;
   /** Nudges a drifting player instead of letting them idle indefinitely — narrative escalation, then a forced guarded_event as the backstop. */
   pressure?: PressureSpec;
+  /** Free-form grouping label, e.g. "act1". Scenes with no act declared are ungrouped and behave exactly as before — this is purely additive. On entering a scene whose act differs from the one just left, the engine snapshots session state into sessions.checkpoint, so a later rewind can return play to the start of that act. */
+  act?: string;
 }
 
 export interface EndingSpec {
@@ -129,8 +133,8 @@ export interface EndingSpec {
 
 export interface ClockPhaseSpec {
   name: string;
-  /** "HH:MM", 24-hour — the time-of-day this phase ends. Phases wrap circularly; the last phase's `until` is implicitly the first phase's start. */
-  until: string;
+  /** Progress-counter value below which this phase applies. Phases are ordered ascending and never wrap — progress at or beyond every threshold falls into the last-declared phase. */
+  until: number;
 }
 
 export interface DeadlineOnReachedSpec {
@@ -143,19 +147,27 @@ export interface DeadlineOnReachedSpec {
 }
 
 export interface ClockDeadlineSpec {
-  /** ISO datetime — the quest-wide backstop. Once story-time reaches this, the engine forces `on_reached` regardless of scene. */
-  at: string;
+  /** Progress-counter value — the quest-wide backstop. Once the progress counter reaches this, the engine forces `on_reached` regardless of scene. Expressed in plot-relevant events, not real time or turn count. */
+  at: number;
   meaning: string;
   on_reached: DeadlineOnReachedSpec;
 }
 
-export interface ClockSpec {
+/** Fully optional — pure narrative flavor (a time-of-day line shown to the model), never used to derive phase or check a deadline. Most quests should skip this entirely. */
+export interface ClockStoryTimeSpec {
   /** ISO datetime, e.g. "1883-04-06T07:15:00" — naive story-time, never timezone-aware. */
   starts_at: string;
-  /** Minutes a turn costs when nothing more specific (an exit's costs_minutes, the model's minutes_elapsed) applies. */
+  /** Minutes a turn costs when nothing more specific (an exit's costs_minutes) applies. */
   default_turn_cost_minutes: number;
+}
+
+export interface ClockSpec {
+  /** Ids (of exits, discoverables, or beats — via BeatSpec.id) whose first occurrence advances the quest's progress counter by one. Each counts at most once per session, however many times it's re-triggered. Phases and any deadline are expressed entirely in terms of this counter — never real time, never elapsed turns. */
+  advances_on: string[];
   phases: ClockPhaseSpec[];
   deadline?: ClockDeadlineSpec;
+  /** Optional — see ClockStoryTimeSpec. Omit unless a quest specifically wants literal elapsed-time flavor text. */
+  story_time?: ClockStoryTimeSpec;
 }
 
 export interface CanonSpec {
@@ -377,18 +389,26 @@ export function validateQuest(quest: Quest): ValidationResult {
     errors.push("canon.secrets is empty but the quest has a win ending");
   }
 
-  // clock: phase time format, deadline sanity. Same-format ISO 8601
-  // datetimes compare correctly as plain strings — no parsing needed for
-  // the starts_at/deadline.at ordering check.
+  // clock: phase thresholds must be positive integers, strictly ascending —
+  // progress is a monotonic counter, not a wrapping time-of-day, so there's
+  // no circular case to allow for.
+  let previousPhaseUntil = -1;
   for (const phase of quest.clock?.phases ?? []) {
-    if (!/^\d{2}:\d{2}$/.test(phase.until)) {
-      errors.push(`clock.phases '${phase.name}'.until = '${phase.until}' is not a valid HH:MM time`);
+    if (!Number.isInteger(phase.until) || phase.until < 0) {
+      errors.push(`clock.phases '${phase.name}'.until = '${phase.until}' is not a non-negative integer`);
+    } else if (phase.until <= previousPhaseUntil) {
+      errors.push(`clock.phases '${phase.name}'.until (${phase.until}) is not strictly greater than the previous phase's until (${previousPhaseUntil})`);
+    } else {
+      previousPhaseUntil = phase.until;
     }
+  }
+  if (quest.clock?.story_time && !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/.test(quest.clock.story_time.starts_at)) {
+    errors.push(`clock.story_time.starts_at '${quest.clock.story_time.starts_at}' is not a valid naive ISO datetime`);
   }
   if (quest.clock?.deadline) {
     const { at, on_reached } = quest.clock.deadline;
-    if (quest.clock.starts_at && at <= quest.clock.starts_at) {
-      errors.push(`clock.deadline.at '${at}' is not after clock.starts_at '${quest.clock.starts_at}'`);
+    if (!Number.isInteger(at) || at <= 0) {
+      errors.push(`clock.deadline.at '${at}' is not a positive integer (progress-counter threshold)`);
     }
     const mode = on_reached?.mode ?? "degrade";
     if (mode !== "degrade" && mode !== "ending") {
@@ -554,6 +574,19 @@ export function validateQuest(quest: Quest): ValidationResult {
     }
   }
 
+  // acts: partial adoption is the likely mistake here — a quest either uses
+  // act grouping or it doesn't. There's no separate quest-level act
+  // registry (acts are purely inferred from scene.act), so "an act with no
+  // scenes" can't structurally happen; the only shape worth flagging is
+  // some scenes opting in and others silently being left out.
+  const scenesWithAct = scenes.filter((s) => s.act);
+  if (scenesWithAct.length > 0) {
+    const scenesWithoutAct = scenes.filter((s) => !s.act);
+    for (const scene of scenesWithoutAct) {
+      warnings.push(`Scene '${scene.id}' has no act declared, but other scenes in this quest do — likely an oversight`);
+    }
+  }
+
   // degradations: a still_winnable:false path must name somewhere it
   // eventually ends up, or it's exactly bug #2 — a branch that can neither
   // win nor terminate. unlocks must point at exits that actually exist
@@ -583,6 +616,17 @@ export function validateQuest(quest: Quest): ValidationResult {
       warnings.push(
         `Degradation '${degId}' is declared but never referenced by any guarded_event.on_allowed.degrade or clock.deadline.on_reached.degrade`
       );
+    }
+  }
+
+  // clock.advances_on entries must name something that actually exists —
+  // an exit id, a discoverable id, or a beat's own (optional) id. A typo
+  // here silently means that event can never advance the progress counter.
+  const allDiscoverableIds = new Set(scenes.flatMap((s) => (s.discoverable ?? []).map((d) => d.id)));
+  const allBeatIds = new Set(scenes.flatMap((s) => (s.beats ?? []).flatMap((b) => (b.id ? [b.id] : []))));
+  for (const eventId of quest.clock?.advances_on ?? []) {
+    if (!allExitIds.has(eventId) && !allDiscoverableIds.has(eventId) && !allBeatIds.has(eventId)) {
+      errors.push(`clock.advances_on '${eventId}' does not match any exit, discoverable, or beat id in the quest`);
     }
   }
 

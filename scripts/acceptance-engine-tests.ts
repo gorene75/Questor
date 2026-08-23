@@ -188,6 +188,23 @@ function testValidator(baseQuest: Quest) {
     found11,
     `warnings: ${JSON.stringify(r11.warnings.filter((w) => w.includes("s1_baker_street") && w.includes("pressure exhausts")))}`
   );
+
+  // ---- Fix 3: acts ----
+
+  const partialActAdoption = structuredClone(baseQuest);
+  partialActAdoption.scenes.find((s) => s.id === "s1_baker_street")!.act = "act1";
+  // every other scene deliberately left without an act
+  const r12 = validateQuest(partialActAdoption);
+  const otherSceneIds = partialActAdoption.scenes.filter((s) => s.id !== "s1_baker_street").map((s) => s.id);
+  const allFlagged = otherSceneIds.every((id) =>
+    r12.warnings.some((w) => w.includes(`Scene '${id}'`) && w.includes("has no act declared"))
+  );
+  report(
+    "1l",
+    "validator warns on every scene missing an act when at least one other scene in the quest declares one",
+    allFlagged,
+    `warnings: ${JSON.stringify(r12.warnings.filter((w) => w.includes("has no act declared")))}`
+  );
 }
 
 // ---- Test 3: to_surrey impossible before heard_the_account ----
@@ -284,6 +301,7 @@ async function testRoylottNeverRises(client: DbClient) {
     fired_beats: session.fired_beats,
     active_degradations: session.active_degradations,
     idle_turns: session.idle_turns,
+    progress_events: session.progress_events,
   });
 
   const model = scriptedModel(
@@ -329,6 +347,7 @@ async function testStrikeWithoutAllClues(client: DbClient) {
     fired_beats: session.fired_beats,
     active_degradations: session.active_degradations,
     idle_turns: session.idle_turns,
+    progress_events: session.progress_events,
   });
 
   const model = scriptedModel(
@@ -381,6 +400,7 @@ async function testLampReachesTooLate(client: DbClient) {
     fired_beats: session.fired_beats,
     active_degradations: session.active_degradations,
     idle_turns: session.idle_turns,
+    progress_events: session.progress_events,
   });
 
   const model = scriptedModel(

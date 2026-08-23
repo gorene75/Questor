@@ -67,6 +67,7 @@ await commitTurn(client, session.id, {
   fired_beats: session.fired_beats,
   active_degradations: session.active_degradations,
   idle_turns: session.idle_turns,
+  progress_events: session.progress_events,
 });
 
 const model = idleModel("adversarial:idle-forever");
@@ -105,6 +106,7 @@ report(
     fired_beats: controlSession.fired_beats,
     active_degradations: controlSession.active_degradations,
     idle_turns: controlSession.idle_turns,
+    progress_events: controlSession.progress_events,
   });
 
   const strikeModel: ModelAdapter = {

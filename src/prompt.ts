@@ -9,8 +9,8 @@ import { PLAY_AGENT_TEMPLATE } from "./promptTemplate.ts";
 export interface SessionState {
   current_scene: string;
   phase: string;
-  /** ISO story-time — shown to the model as just the time-of-day, never the raw machine datetime. */
-  story_time: string;
+  /** ISO story-time — shown to the model as just the time-of-day, never the raw machine datetime. Null unless the quest configures optional clock.story_time; purely flavor, never implies anything about phase or a deadline. */
+  story_time: string | null;
   flags: Record<string, boolean>;
   /** character id -> current disposition level. Absent entries default to that character's starts_at. */
   characters: Record<string, string>;
@@ -165,7 +165,7 @@ function buildScene(quest: Quest, session: SessionState): string {
   const pressureHint = buildPressureHint(scene, session);
 
   const lines = [
-    `Current time: ${formatTimeOfDay(session.story_time)} (${session.phase})`,
+    session.story_time ? `Current time: ${formatTimeOfDay(session.story_time)} (${session.phase})` : `Current phase: ${session.phase}`,
     "",
     "Truths:",
     joinLines(scene.truths.map((t) => `- ${t}`), "(none)"),

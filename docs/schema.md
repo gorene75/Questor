@@ -79,42 +79,49 @@ The contract between three things: the file an author (or the builder agent) pro
 
 ## clock
 
-*(v3 rewrite.)* v1 gated the winning scene on a `dusk_reached` flag that nothing ever set, making the quest unwinnable — v2 fixed that with named phases and discrete `advances_on` triggers. But a conversation and a three-hour journey to Surrey both just "happened" — v2's phases were too coarse to mean anything beyond gating a handful of scenes. v3 tracks story-time in actual minutes, because time is quantifiable, unlike coherence.
+*(Rewritten twice. First to a minutes-based story-time clock, then rolled back.)* The minutes-based version tracked real elapsed story-time — an exit could cost 180 minutes, a turn cost 5 by default — and phases and the deadline were both derived from it. Live testing found the failure mode that predicts: a 30-turn interrogation transcript, entirely genuine questions with real discoverables firing, pushed the clock forward exactly as far as 30 turns of silence would have, because *every* turn cost minutes by default, whether or not anything actually happened. Thoroughness was taxed at the same rate as stalling. That's backwards — a player asking twenty careful questions is doing exactly what the quest wants, and the clock should not know or care.
+
+The fix: the clock now advances only on declared events, never on elapsed turns or idle conversation. `advances_on` names the specific things that count — exits, discoverables, beats — and each one moves a single quest-wide **progress counter** by exactly one, the first time it happens. Phases and any `deadline` are expressed entirely in terms of that counter.
 
 ```json
 {
-  "starts_at": "1883-04-06T07:15:00",
-  "default_turn_cost_minutes": 5,
+  "advances_on": ["the_death", "to_surrey", "the_wall", "bellpull", "the_bed", "ventilator", "safe", "to_watch"],
   "phases": [
-    { "name": "morning", "until": "12:00" },
-    { "name": "afternoon", "until": "18:00" },
-    { "name": "dusk", "until": "20:30" },
-    { "name": "night", "until": "05:00" }
+    { "name": "morning", "until": 1 },
+    { "name": "afternoon", "until": 4 },
+    { "name": "dusk", "until": 10 },
+    { "name": "night", "until": 999 }
   ],
   "deadline": {
-    "at": "1883-04-07T03:00:00",
-    "meaning": "Whatever killed Julia comes for Helen.",
+    "at": 11,
+    "meaning": "Whatever killed Julia comes for Helen. Thorough investigation of what the case actually needs never costs you this — only piling on optional detours past what the case requires does.",
     "on_reached": { "mode": "ending", "ending": "e_too_late" }
   }
 }
 ```
 
-**`starts_at` is a real ISO datetime, not a phase name.** It's naive story-time — never timezone-aware, since it's fictional, not a real-world instant.
+**`advances_on` is a flat list of ids — exit ids, discoverable ids, or a beat's own (optional) `id` field.** The same id can belong to more than one scene (`to_surrey` appears in both `s1_baker_street` and `s3_commons`) and still counts as one event, since it's the same narrative action regardless of which room it was taken from. Each id in the list counts **once per session, ever** — asking the same question five different ways, or a model re-reporting an already-fired discoverable, never advances the counter twice. This is what makes the fix actually hold: an interrogation that repeats itself, or explores real but non-critical detail, simply never touches `advances_on` a second time for anything it's already covered.
 
-**`phases` are time-of-day ranges, not a flat ordered list.** Each phase runs from the *previous* phase's `until` to its own — circularly, so the last entry's `until` is implicitly the first entry's start. That's what lets `night` (until 05:00) span midnight without special-casing: its start is `dusk`'s `until` (20:30), and it hands off to `morning` at 05:00. `phase` is always *derived* from story-time; nothing stores it as an independently-authored value the way v2 did.
+**`phases` are progress-counter thresholds, not time-of-day ranges — and they don't wrap.** Phase *i* covers progress in `[phases[i-1].until, phases[i].until)`; the first phase implicitly starts at 0, and progress at or beyond every threshold falls into the last-declared phase. Unlike the old time-based version, there's no circular case to special-case, because a counter that only ever goes up has no "midnight." `phase` is always *derived* — nothing stores it as an independently-authored value.
 
-**Exits and beats may declare `costs_minutes`.** `to_surrey` costing 180 and a beat's own `costs_minutes` are both authored, deterministic — the engine trusts them completely, no model estimate involved. For everything else (an examine, a question, ordinary conversation), the engine falls back to the model's own `minutes_elapsed` from the turn contract, clamped to a sane range, and falls back again to `default_turn_cost_minutes` if that's absent or nonsensical. **General principle: an author-declared cost always wins over a model estimate.**
+**Exits and beats may still declare `costs_minutes`, but it's inert by default.** It only does anything if the quest also configures the fully optional `story_time` block below — otherwise it's a no-op field with no effect on phase, `deadline`, or anything else. **General principle, unchanged since v3's turn contract: never gate on something the engine can't verify, and don't let a per-turn cost apply to turns that didn't earn it.**
 
-**`deadline` is the whole-quest backstop.** Once story-time reaches `at`, the engine forces `on_reached`. Optional: `max_turns` + `universal_endings` (below) already guarantee no single scene runs forever, so `deadline` is about the *quest's* overall clock, not a strict requirement for termination. For a quest built around a real deadline ("you have until dawn"), declare one; a quest without that framing can skip it.
+**`deadline` is the whole-quest backstop, now expressed in plot-relevant events.** Once the progress counter reaches `at`, the engine forces `on_reached` — `on_reached.mode` is unchanged from before (`"ending"` forces a named ending outright and wins over `max_turns` on a shared turn; `"degrade"`, the default, applies a named `degradations` entry and lets the story continue, so `max_turns` keeps applying normally afterward). What changed is only what `at` counts against: not minutes elapsed, but distinct events resolved. Speckled Band's `deadline.at` is set above what winning strictly requires (7 events: hearing the account, travelling, the three room secrets, one clue from Roylott's room, and committing to the watch) but within what full optional exploration would reach (13, if every side detail is checked) — so investigating everything the case actually needs never risks it, and only chasing every optional avenue as well does.
 
-**`on_reached.mode` is a per-quest choice, not assumed behavior.** Hitting the deadline is not automatically fatal — the author decides what missing it costs:
+**Tune `advances_on` and the phase thresholds together, checking against every `beat.at_turn` and `max_turns` in scenes that share them.** A beat still fires on elapsed scene-turns, same as always — that part of the engine didn't change — so a beat whose `at_turn` lands at or before a scene's `pressure` exhaustion turn can still preempt it (see `pressure`'s own note on this), and by the same logic, nothing stops an author from picking `advances_on` events so sparse that a scene's real, honest progress rarely fires at all. There's no validator check for that particular shape yet — it's a live tuning concern, not a schema violation.
 
-- `"ending"` forces the named `ending` outright. This is the higher-stakes choice, and it wins over `max_turns` if both would fire the same turn — an authored, quest-specific "time's up" moment beats a generic, unauthored safety net. Requires an `ending` field naming a declared ending or universal_ending.
-- `"degrade"` (the default when `mode` is omitted) applies a named `degradations` entry (below) and lets the story continue in a worse state instead of ending outright. Because the session stays active, `max_turns` keeps applying normally on every later turn — nothing else guarantees the session terminates once it's played past its own deadline. Requires a `degrade` field naming a declared degradation.
+**`story_time` is fully optional, and most quests should skip it.** It exists only for a quest that wants a literal elapsed-time line in narration — "the fire has burned down," "the light is going" — with no mechanical weight behind it:
 
-Speckled Band uses `"ending"`: missing the deadline means Helen is dead by morning, and that is the correct stake for this quest's premise — not because `"ending"` is the mechanism's only mode, but because it's the authored choice for this quest specifically. A quest where "you ran out of time" should cost something short of the whole story would set `"degrade"` instead.
+```json
+"story_time": {
+  "starts_at": "1883-04-06T07:15:00",
+  "default_turn_cost_minutes": 5
+}
+```
 
-The clock only moves forward — minutes never subtract. Scenes and exits may still require a phase via `requires_phase`, checked against the *derived* phase; every declared phase is trivially reachable just by enough time passing, so there's no separate reachability analysis the way v2's `advances_on` needed. The engine advances the clock; the model never touches it, and is told the current time and phase each turn (as a plain `HH:MM`, never the raw machine datetime) so narration stays consistent with it.
+If declared, the engine advances `story_time` using the same `costs_minutes`-then-`minutes_elapsed`-then-default resolution the old mechanism used, and shows it to the model as a plain `HH:MM` (never the raw machine datetime). It is never read back for anything — not `phase`, not `deadline`, not any `requires`. Speckled Band doesn't declare it: "the hour" is narrated loosely from `phase` alone (morning/afternoon/dusk/night are plenty for a narrator's voice), and a literal clock reading would only invite the exact minutes-based reasoning this rewrite removed.
+
+Scenes and exits may still require a phase via `requires_phase`, checked against the *derived* phase exactly as before — the only thing that changed is what derives it.
 
 ---
 
@@ -287,7 +294,9 @@ Supported: `AND`, `OR`, `NOT`, parentheses, flag names, and `character.helen >= 
   "on_fail": { "when": "condition", "to": "ending id" },
 
   "max_turns": 25,
-  "on_exhausted": "scene id or ending id"
+  "on_exhausted": "scene id or ending id",
+
+  "act": "act1"
 }
 ```
 
@@ -308,6 +317,20 @@ Supported: `AND`, `OR`, `NOT`, parentheses, flag names, and `character.helen >= 
 **A beat may `sets` flags in addition to (or instead of) `goto`.** A time-based consequence — being caught searching, missing a window — is a deterministic threshold on `scene_turn_count`, not something the model is trusted to notice on its own. `on_fail` is evaluated immediately after beats fire each turn, so a beat that sets the flag named in `on_fail.when` ends the scene that same turn, without needing its own `goto`.
 
 **`max_turns` is a v3 addition — a termination backstop every scene has, default 25, whether declared or not.** `on_fail` and `beats` cover the endings an author thought to write; `max_turns` covers the ones nobody anticipated — a player who circles a scene indefinitely without triggering anything else. On exceeding it, the engine forces `on_exhausted` (a scene or ending id, same target rules as `beat.goto`); if the scene declares none, it falls back to the quest's first `universal_ending`. This is invisible to the model — like `beats` and `on_fail`, it is never shown in `{{SCENE}}` and the model never reasons about it; it just keeps narrating, and the engine cuts in if the scene has genuinely run too long. The validator requires every scene to have *somewhere* to go when this fires: either its own `on_exhausted`, or at least one `universal_ending` declared at the quest level.
+
+**`act` is a free-form grouping label, and purely additive.** A scene with no `act` behaves exactly as it always has — nothing about acts is required, and a quest that never sets it never touches any of the machinery below. Its only effect: crossing from a scene in one act into a scene in a different act (an undeclared act counts as its own bucket, distinct from any named one) writes a checkpoint. See the next section.
+
+---
+
+## Acts and rewind
+
+A `checkpoint` is a full snapshot of session state — everything a later turn or the model's next prompt could read: `flags`, `characters`, `active_degradations`, `invented`, `transcript`, `progress_events`, `fired_beats`, `scene_turn_count`, `idle_turns`, and the scene itself. The engine writes one automatically, overwriting whatever was there before, the moment play enters a scene whose `act` differs from the one just left. Nothing else about ordinary play changes — `checkpoint` just accumulates in the background, always holding the most recent act-entry snapshot, or `null` if the quest declares no acts (or hasn't entered one with a checkpoint yet).
+
+**Rewind restores it.** Given a session with a checkpoint, `rewindToCheckpoint` overwrites `flags`/`characters`/`active_degradations`/`invented`/`transcript`/`progress_events`/`fired_beats`/`scene_turn_count`/`idle_turns` with the checkpoint's stored values, resets `current_scene` to the scene the checkpoint was written at, and sets `status: "active"` / `ending_id: null` / `ending_trigger: null` — un-ending the session if it had lost or won. The checkpoint itself is left in place afterward, so a second failed attempt at the same act can rewind again.
+
+**Why the full snapshot, not just the obviously narrative fields.** The model has no memory beyond what's re-fed into its prompt each turn — `{{HISTORY}}` from `transcript`, `{{INVENTED}}` from `invented`, scene state from `flags`/`characters`. Restoring the DB row *is* restoring the model's effective memory, but only if every field the prompt reads is actually restored. A rewind that reset flags and characters but left `transcript` pointing at the failed attempt would still show the model those turns in `{{HISTORY}}` on the very next call — the story would "forget" mechanically while still talking about what it forgot.
+
+**Manual and explicit, for now.** Nothing in the engine auto-triggers a rewind on any particular loss — a `POST /session/:id/rewind` endpoint exposes it, and a caller (a human, or a future rule) decides when reaching for it makes sense. Not every loss should necessarily offer one — an ending an author deliberately wrote as final is a different thing from a player who wandered into a fight they couldn't have known to avoid — and that distinction isn't made yet. This stage only builds the mechanism.
 
 ---
 
@@ -401,7 +424,7 @@ What the model must return. The engine parses this and rejects anything malforme
 }
 ```
 
-`minutes_elapsed` is a suggestion, not a contract field — see `clock` above. The engine prefers an exit's authored `costs_minutes` when one applies, and only falls back to this for free-form turns; a missing or nonsensical value just falls back further, to `default_turn_cost_minutes`.
+`minutes_elapsed` is a suggestion, not a contract field, and inert for almost every quest — see `clock` above. It's used at all only when the quest configures optional `clock.story_time`, and even then purely as flavor: it never derives `phase`, never feeds a `deadline`, never gates anything. The engine prefers an exit's authored `costs_minutes` when one applies, and only falls back to this for free-form turns; a missing or nonsensical value just falls back further, to `story_time.default_turn_cost_minutes`.
 
 There is no `flags_set` field. `discoverable.sets` and `exit.sets` already declare which flags a given discoverable or exit raises — the engine applies them the moment it validates `discovered`/`exit_id`, so asking the model to separately name the same flags is redundant bookkeeping with no independent check behind it. Live testing found exactly the failure that predicts: a model reporting a flag directly, with no discoverable or exit behind it at all. General rule going forward: never ask the model to report anything the engine can derive.
 
@@ -432,14 +455,16 @@ Runs before a quest is playable. Phase 2's builder agent calls this in a loop, s
 - Scene unreachable from `start_scene`
 - No path from start to any `result: "win"` ending
 - `requires` on a flag that no exit or discoverable ever sets *(this is the v1 `dusk_reached` bug)*
-- `requires_phase` naming a phase not in the clock *(v3: every declared phase is reachable purely by story-time passing, so there is no separate reachability check the way v2's `advances_on` needed)*
+- `requires_phase` naming a phase not in the clock
 - Character referenced in `present` or a `requires` but not declared
 - Disposition level referenced in a requirement but not in that character's `levels`
 - Empty `secrets` on a quest with a win condition
 - A scene with no `on_exhausted` and the quest with no `universal_endings` declared — nothing catches that scene if `max_turns` is ever exceeded
-- A `clock.phases` entry's `until` that isn't a valid `HH:MM` time
-- `clock.deadline.at` that isn't after `clock.starts_at`
+- A `clock.phases` entry's `until` that isn't a non-negative integer, or isn't strictly greater than the previous phase's `until` — progress is a monotonic counter, so thresholds must be ascending, with no circular case the way time-of-day once needed
+- `clock.deadline.at` that isn't a positive integer
 - `clock.deadline.on_reached` with an invalid `mode`, an `"ending"` mode with no `ending` field or one naming an undeclared ending, or a `"degrade"` mode (default) with no `degrade` field or one naming an undeclared degradation
+- A `clock.advances_on` entry that doesn't match any exit, discoverable, or beat id anywhere in the quest
+- `clock.story_time.starts_at`, if declared, that isn't a valid naive ISO datetime
 - A `guarded_event.on_allowed.degrade` naming an undeclared degradation
 - A `degradation.unlocks` entry naming an exit id that doesn't exist in any scene
 - A degradation with `still_winnable: false` that names no ending, or names one that doesn't exist
@@ -456,5 +481,6 @@ Runs before a quest is playable. Phase 2's builder agent calls this in a loop, s
 - A `degradations` entry declared but never referenced by any `guarded_event.on_allowed.degrade` or `clock.deadline.on_reached.degrade`
 - A scene with more than four `exits` or `discoverable` entries but no `pressure` declared — busy enough for a player to drift in, with nothing pulling them back
 - A scene's `pressure` exhaustion turn (`idle_after_turns * escalation.length`) landing at or after a `beat.at_turn` in the same scene, or after `max_turns` — the beat or the scene budget always fires first, so `on_exhausted` can never actually be reached
+- A scene with no `act` declared when at least one other scene in the quest declares one — partial adoption is the likely mistake, since acts are all-or-nothing in practice even though nothing in the schema requires it
 
 The win-path check is the one that matters most. It is what a human author cannot reliably do by eye, and it is exactly the bug I shipped in v1.
