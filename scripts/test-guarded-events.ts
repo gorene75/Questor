@@ -58,6 +58,7 @@ await upsertQuest(client, quest);
       disposition_changes: [],
       invented: [],
       refused: false,
+      narration_implies_departure: false,
     }),
     JSON.stringify({
       narration: "She rises again and leaves, undeterred.",
@@ -67,6 +68,7 @@ await upsertQuest(client, quest);
       disposition_changes: [],
       invented: [],
       refused: false,
+      narration_implies_departure: false,
     }),
   ]);
 
@@ -116,6 +118,7 @@ await upsertQuest(client, quest);
       disposition_changes: [],
       invented: [],
       refused: false,
+      narration_implies_departure: false,
     }),
     JSON.stringify({
       narration: "She rises again and leaves, undeterred.",
@@ -125,6 +128,7 @@ await upsertQuest(client, quest);
       disposition_changes: [],
       invented: [],
       refused: false,
+      narration_implies_departure: false,
     }),
   ]);
 
@@ -156,6 +160,7 @@ await upsertQuest(client, quest);
       disposition_changes: [],
       invented: [],
       refused: false,
+      narration_implies_departure: false,
     }),
     JSON.stringify({
       narration: "Something keeps her a moment longer — she hesitates at the door and does not actually go.",
@@ -165,6 +170,7 @@ await upsertQuest(client, quest);
       disposition_changes: [],
       invented: [],
       refused: false,
+      narration_implies_departure: false,
     }),
   ]);
 
@@ -195,6 +201,7 @@ await upsertQuest(client, quest);
       disposition_changes: [],
       invented: [],
       refused: false,
+      narration_implies_departure: false,
     }),
   ]);
   await processTurn({ client, model: heardModel, sessionId: session.id, playerInput: "How did your sister die?" });
@@ -208,6 +215,7 @@ await upsertQuest(client, quest);
       disposition_changes: [],
       invented: [],
       refused: false,
+      narration_implies_departure: false,
     }),
   ]);
   const result = await processTurn({ client, model: departModel, sessionId: session.id, playerInput: "Goodbye." });
@@ -239,6 +247,7 @@ await upsertQuest(client, quest);
       disposition_changes: [],
       invented: [],
       refused: false,
+      narration_implies_departure: false,
     }),
     JSON.stringify({
       narration: "She rises again and leaves, undeterred.",
@@ -248,6 +257,7 @@ await upsertQuest(client, quest);
       disposition_changes: [],
       invented: [],
       refused: false,
+      narration_implies_departure: false,
     }),
   ]);
   await processTurn({ client, model: leaveModel, sessionId: session.id, playerInput: "You are not going mad. Goodbye." });
@@ -261,6 +271,7 @@ await upsertQuest(client, quest);
       disposition_changes: [],
       invented: [],
       refused: false,
+      narration_implies_departure: false,
     }),
   ]);
   const result = await processTurn({ client, model: travelModel, sessionId: session.id, playerInput: "I'll go to Surrey anyway." });

@@ -40,6 +40,7 @@ function scriptedModel(name: string, responses: Record<string, unknown>[]): Mode
           disposition_changes: [],
           invented: [],
           refused: false,
+          narration_implies_departure: false,
           ...fields,
         }),
       };
@@ -103,7 +104,13 @@ await upsertQuest(client, quest);
   // the_death itself is already counted, so every one of these turns
   // should be progress-neutral even though every one of them is a genuine,
   // on-topic question with a real discoverable firing.
-  const topics = ["the_death", "dying_words", "the_whistle", "the_move", "the_bruises", "tonight"];
+  //
+  // Order matters now (Fix 3): the_move requires heard_the_account,
+  // the_whistle requires knows_about_move, dying_words and tonight require
+  // knows_the_whistle — a real dependency chain, not independent gates. The
+  // first pass through this list unlocks it in the order it's actually
+  // askable in; every pass after that just repeats already-satisfied asks.
+  const topics = ["the_move", "the_whistle", "the_bruises", "dying_words", "tonight"];
   for (let turn = 4; turn <= 30; turn++) {
     const topic = topics[(turn - 4) % topics.length]!;
     const model = scriptedModel(`interrogation:turn-${turn}`, [{ discovered: [topic] }]);

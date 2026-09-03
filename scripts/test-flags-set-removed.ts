@@ -59,6 +59,7 @@ await upsertQuest(client, quest);
     disposition_changes: [],
     invented: [],
     refused: false,
+    narration_implies_departure: false,
   });
 
   const model = scriptedModel("regression:bare-flags-set-claim", rawResponseText);
@@ -85,6 +86,7 @@ await upsertQuest(client, quest);
     disposition_changes: [],
     invented: [],
     refused: false,
+    narration_implies_departure: false,
   });
 
   const model = scriptedModel("regression:legitimate-discoverable", rawResponseText);

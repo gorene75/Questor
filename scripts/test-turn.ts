@@ -19,6 +19,7 @@ const scriptedResponses = [
     disposition_changes: [],
     invented: [],
     refused: false,
+    narration_implies_departure: false,
   }),
   // Turn 2, attempt 1: a hallucinated exit id — must be rejected.
   JSON.stringify({
@@ -28,6 +29,7 @@ const scriptedResponses = [
     disposition_changes: [],
     invented: [],
     refused: false,
+    narration_implies_departure: false,
   }),
   // Turn 2, attempt 2 (retry): valid.
   JSON.stringify({
@@ -37,6 +39,7 @@ const scriptedResponses = [
     disposition_changes: [],
     invented: ["A clock on the mantel ticks loudly in the quiet."],
     refused: false,
+    narration_implies_departure: false,
   }),
   // Turn 3, attempt 1: not JSON at all.
   "I'm not going to output JSON, sorry.",

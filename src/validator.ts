@@ -44,6 +44,8 @@ export interface ExitSpec {
   sets?: string[];
   /** Pure narrative flavor — only meaningful when clock.story_time is configured, and never gates anything. Taking this exit is real clock progress only if its id also appears in clock.advances_on. */
   costs_minutes?: number;
+  /** Instruction for how to narrate this specific departure (2-3 sentences), shown to the model once the exit is available — parallel to a scene's opens_with, but for the passage itself. Omit for a direct cut with no explicit passage. */
+  transition?: string;
 }
 
 export interface BeatSpec {

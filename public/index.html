@@ -16,33 +16,16 @@
   form { display: flex; gap: 0.5rem; }
   input[type="text"] { flex: 1; font-family: monospace; padding: 0.4rem; }
   button { font-family: monospace; padding: 0.4rem 0.8rem; }
-  #setup { border: 1px solid #999; padding: 0.75rem; margin-bottom: 0.75rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; }
-  #setup label { white-space: nowrap; }
-  #setup select { font-family: monospace; padding: 0.3rem; flex: 1; min-width: 12rem; }
-  #model-tag { color: #666; font-size: 0.85em; margin-bottom: 0.5rem; }
+  #setup { border: 1px solid #999; padding: 0.75rem; margin-bottom: 0.75rem; display: flex; align-items: center; }
 </style>
 </head>
 <body>
 <h3>Questor</h3>
 
 <div id="setup">
-  <label for="model-select">Model:</label>
-  <select id="model-select">
-    <option value="">(server default)</option>
-    <optgroup label="Workers AI">
-      <option value="@cf/openai/gpt-oss-20b">gpt-oss-20b</option>
-      <option value="@cf/meta/llama-3.3-70b-instruct-fp8-fast">llama-3.3-70b-instruct-fp8-fast</option>
-      <option value="@cf/meta/llama-4-scout-17b-16e-instruct">llama-4-scout-17b-16e-instruct</option>
-    </optgroup>
-    <optgroup label="Anthropic">
-      <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (cheap, fast)</option>
-      <option value="claude-sonnet-5">Claude Sonnet 5</option>
-    </optgroup>
-  </select>
   <button id="start-button" type="button">Start</button>
 </div>
 
-<div id="model-tag"></div>
 <div id="messages"></div>
 <form id="input-form">
   <input id="player-input" type="text" autocomplete="off" placeholder="What do you do?" disabled />
@@ -55,9 +38,7 @@ let sessionId = null;
 let ended = false;
 
 const setupEl = document.getElementById("setup");
-const modelSelectEl = document.getElementById("model-select");
 const startButtonEl = document.getElementById("start-button");
-const modelTagEl = document.getElementById("model-tag");
 const messagesEl = document.getElementById("messages");
 const formEl = document.getElementById("input-form");
 const inputEl = document.getElementById("player-input");
@@ -72,12 +53,11 @@ function addMessage(text, kind) {
 
 async function start() {
   startButtonEl.disabled = true;
-  const chosenModel = modelSelectEl.value;
 
   const res = await fetch("/session", {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ quest_id: QUEST_ID, model_name: chosenModel || undefined }),
+    body: JSON.stringify({ quest_id: QUEST_ID }),
   });
   const data = await res.json();
   if (!res.ok) {
@@ -87,7 +67,6 @@ async function start() {
   }
 
   sessionId = data.session_id;
-  modelTagEl.textContent = "model: " + (chosenModel || "(server default)");
   setupEl.style.display = "none";
 
   addMessage(data.narration, "narrator");

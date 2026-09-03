@@ -24,6 +24,7 @@ function idleModel(name: string): ModelAdapter {
           disposition_changes: [],
           invented: [],
           refused: false,
+          narration_implies_departure: false,
         }),
       };
     },
@@ -121,6 +122,7 @@ report(
           disposition_changes: [],
           invented: [],
           refused: false,
+          narration_implies_departure: false,
         }),
       };
     },

@@ -262,7 +262,8 @@ Supported: `AND`, `OR`, `NOT`, parentheses, flag names, and `character.helen >= 
       "requires": "heard_the_account",
       "to": "s4_exterior",
       "sets": [],
-      "costs_minutes": 180
+      "costs_minutes": 180,
+      "transition": "The carriage ride passes mostly in silence. Helen watches the countryside change. You arrive as the light is going."
     }
   ],
 
@@ -301,6 +302,8 @@ Supported: `AND`, `OR`, `NOT`, parentheses, flag names, and `character.helen >= 
 ```
 
 **`requires` on both scenes and exits is enforced by the engine**, not requested of the model. If the condition is unmet, the exit does not exist that turn. The model is not told why — it narrates the attempt failing in-world.
+
+**`transition` is optional instruction for how a specific departure is narrated** — parallel to a scene's `opens_with`, but for the passage between scenes rather than the arrival itself. Once the exit is available, it's shown alongside the exit's own listing, and the model renders it (2-3 sentences, in its own words) as part of taking that exit. Omit it and the exit is a direct cut — the model narrates the arrival plainly, with no journey improvised in between. It's never shown while the exit is still unavailable: an author's carefully written departure text attached to a line the model is told not to take would be noise at best, and a hint at the destination at worst.
 
 **`requires` on a discoverable is the character gate.** This is where the interior mechanic pays off: the locked door is not available at `guarded`, no matter how the player phrases the question. Helen is not withholding strategically — she is frightened, and frightened people do not lead with the worst part.
 
@@ -420,11 +423,14 @@ What the model must return. The engine parses this and rejects anything malforme
   ],
   "invented": ["details invented this turn that must stay true"],
   "minutes_elapsed": 5,
+  "narration_implies_departure": false,
   "refused": false
 }
 ```
 
 `minutes_elapsed` is a suggestion, not a contract field, and inert for almost every quest — see `clock` above. It's used at all only when the quest configures optional `clock.story_time`, and even then purely as flavor: it never derives `phase`, never feeds a `deadline`, never gates anything. The engine prefers an exit's authored `costs_minutes` when one applies, and only falls back to this for free-form turns; a missing or nonsensical value just falls back further, to `story_time.default_turn_cost_minutes`.
+
+**`narration_implies_departure` closes the location bug.** `exit_id` is the only thing that ever moves `current_scene` — but nothing previously stopped the *narration itself* from describing an arrival or a completed departure while `exit_id` stayed `null`. A model could narrate a full journey ("the cab arrives, you step out at the address") on a turn where the engine never committed any scene change, and the session would hold two contradictory realities: the DB says one location, the displayed text says another. This field is a required self-report, checked every turn: does the `narration` you just wrote describe having arrived somewhere else, or a departure completed? `true` is only ever valid alongside a real `exit_id` — `true` with `exit_id: null` is rejected outright, same retry-then-fallback flow as any other validation failure, with guidance steering the retry back to the scene the player is actually still in. This is a **self-report cross-checked against `exit_id`**, not a classifier over the narration's actual content — it catches an honest-but-mistaken model, not one that narrates arrival while also reporting `false` here. That's an accepted limitation of the cheap version; a real classifier (a second model call, or scoring the narration text directly) would close the remaining gap at a real per-turn cost.
 
 There is no `flags_set` field. `discoverable.sets` and `exit.sets` already declare which flags a given discoverable or exit raises — the engine applies them the moment it validates `discovered`/`exit_id`, so asking the model to separately name the same flags is redundant bookkeeping with no independent check behind it. Live testing found exactly the failure that predicts: a model reporting a flag directly, with no discoverable or exit behind it at all. General rule going forward: never ask the model to report anything the engine can derive.
 
@@ -432,11 +438,12 @@ There is no `flags_set` field. `discoverable.sets` and `exit.sets` already decla
 
 1. `exit_id` is null or is a legal exit of the current scene
 2. That exit's `requires` and `requires_phase` are satisfied
-3. `guarded_event_id` is null or is a legal `guarded_events` id of the current scene, and its `requires` is satisfied — checked exactly like `exit_id`, but it names a narrated consequence rather than a scene transition, so satisfying it doesn't change `current_scene` on its own
-4. Each `discovered` id belongs to the current scene and its `requires` is met; the flags it declares in `sets` are applied
-5. If `exit_id` is non-null, the flags it declares in `sets` are applied
-6. `disposition_changes` are clamped to one step, within floor and ceiling
-7. `invented` is appended to session state and fed back in every subsequent turn
+3. `narration_implies_departure` is `false`, or `exit_id` is non-null — a narrated arrival or completed departure is only legal alongside a real, validated exit
+4. `guarded_event_id` is null or is a legal `guarded_events` id of the current scene, and its `requires` is satisfied — checked exactly like `exit_id`, but it names a narrated consequence rather than a scene transition, so satisfying it doesn't change `current_scene` on its own
+5. Each `discovered` id belongs to the current scene and its `requires` is met; the flags it declares in `sets` are applied
+6. If `exit_id` is non-null, the flags it declares in `sets` are applied
+7. `disposition_changes` are clamped to one step, within floor and ceiling
+8. `invented` is appended to session state and fed back in every subsequent turn
 
 Any failure: retry once with the error appended. On second failure, commit nothing, return a null-exit fallback narration, and log it — unless the failure is specifically an unmet `guarded_event.requires` and that event declares `on_allowed.degrade`, in which case the event is let through in degraded form instead (see `degradations` above) rather than falling back. The log is how you tell a bad model from a bad file.
 

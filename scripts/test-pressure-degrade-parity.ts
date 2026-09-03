@@ -45,6 +45,7 @@ function idleModel(name: string): ModelAdapter {
           disposition_changes: [],
           invented: [],
           refused: false,
+          narration_implies_departure: false,
         }),
       };
     },
@@ -113,6 +114,7 @@ const insistingModel: ModelAdapter = {
         disposition_changes: [],
         invented: [],
         refused: false,
+        narration_implies_departure: false,
       }),
     };
   },

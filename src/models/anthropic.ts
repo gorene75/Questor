@@ -25,12 +25,21 @@ export function createAnthropicAdapter(apiKey: string, model: string): ModelAdap
         body: JSON.stringify({
           model,
           // A 1-3 sentence narration plus the compact JSON turn contract
-          // realistically needs ~200-400 tokens; 1024 was a lot of unused
-          // ceiling. Not a fix for the retry-doubling (that's the system/
-          // user split), just trims worst-case cost/latency.
-          max_tokens: 500,
+          // realistically needs ~200-400 tokens; 800 keeps headroom above
+          // that without reintroducing the original oversized-response cost
+          // 1024 had.
+          max_tokens: 800,
           system,
           messages: [{ role: "user", content: user }],
+          // claude-sonnet-5 emits extended thinking by default even though
+          // nothing here asks for it. Some turns spent the ENTIRE max_tokens
+          // budget on an opaque thinking block and returned zero text
+          // (stop_reason: "max_tokens", 0 tokens left for the actual JSON),
+          // forcing a full retry every time it happened. This isn't a task
+          // that benefits from visible chain-of-thought — it's a single
+          // structured narration turn — so thinking is turned off outright
+          // rather than budgeted around.
+          thinking: { type: "disabled" },
         }),
       });
 

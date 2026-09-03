@@ -33,6 +33,19 @@ export interface ModelTurnResponse {
   disposition_changes: DispositionChange[];
   invented: string[];
   refused: boolean;
+  /**
+   * Self-report: does this turn's own `narration` describe the player
+   * having arrived somewhere else, or having completed a departure —
+   * "you arrive at...", "the cab pulls up outside...", "you are now in..."?
+   * Cross-checked against `exit_id`: true with `exit_id: null` is rejected,
+   * since narrating a scene change the engine never committed produces two
+   * contradictory realities (the DB says one location, the text says
+   * another). This catches an honest-but-mistaken self-report; it cannot
+   * catch a model that narrates arrival while also reporting `false` here —
+   * that's a real, acknowledged gap in a self-report-based check, not a
+   * classifier over the actual prose.
+   */
+  narration_implies_departure: boolean;
   /** Pure narrative flavor, never gating — only used at all when the quest configures optional clock.story_time, and even then only as a fallback behind an exit's own costs_minutes. Phase and any deadline are driven entirely by clock.advances_on, never by this. */
   minutes_elapsed?: number;
 }
@@ -102,6 +115,9 @@ function parseModelResponse(text: string): ModelTurnResponse {
     throw new Error("'invented' must be an array of strings");
   }
   if (typeof obj.refused !== "boolean") throw new Error("'refused' must be a boolean");
+  if (typeof obj.narration_implies_departure !== "boolean") {
+    throw new Error("'narration_implies_departure' must be a boolean");
+  }
 
   // A suggestion, not a contract field — silently dropped rather than
   // rejected if missing or nonsensical, since an authored costs_minutes or
@@ -119,6 +135,7 @@ function parseModelResponse(text: string): ModelTurnResponse {
     disposition_changes: dispositionChanges,
     invented: obj.invented as string[],
     refused: obj.refused,
+    narration_implies_departure: obj.narration_implies_departure,
     minutes_elapsed: minutesElapsed,
   };
 }
@@ -150,6 +167,21 @@ function validateTurnResponse(
 ): string[] {
   const errors: string[] = [];
   const ctx = buildContext(quest, session.flags, session.characters);
+
+  // The location bug: exit_id is the only thing that ever moves
+  // current_scene, but nothing previously stopped the narration itself from
+  // describing an arrival or departure the engine never committed — two
+  // contradictory realities, the DB in one place and the displayed text in
+  // another. narration_implies_departure is a self-report the model must
+  // reconcile with exit_id every turn; claiming the narration implies
+  // departure while exit_id is null is rejected outright, with guidance
+  // steering the retry back to the scene the player is actually still in.
+  if (response.narration_implies_departure && response.exit_id === null) {
+    errors.push(
+      "narration_implies_departure is true but exit_id is null — you are still in the current scene. " +
+        "Describe the attempt, the refusal, or what's actually here — not arrival somewhere else."
+    );
+  }
 
   if (response.exit_id !== null) {
     const exit = (scene.exits ?? []).find((e) => e.id === response.exit_id);

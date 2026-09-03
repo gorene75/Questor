@@ -184,6 +184,7 @@
 
   "flags": {
     "heard_the_account": false,
+    "knows_about_move": false,
     "knows_the_whistle": false,
     "saw_the_bruises": false,
     "knows_the_will": false,
@@ -231,22 +232,18 @@
           "sets": ["heard_the_account"]
         },
         {
-          "id": "dying_words",
-          "trigger": "asks what the sister said or did at the end",
-          "requires": "character.helen >= opening",
-          "reveal": "She got as far as the corridor. She said the words 'the speckled band' and then she was gone."
+          "id": "the_move",
+          "trigger": "asks why she changed rooms",
+          "requires": "heard_the_account",
+          "reveal": "Repairs to the west wall. She was moved into Julia's room three days ago. Last night she heard the whistle.",
+          "sets": ["knows_about_move"]
         },
         {
           "id": "the_whistle",
           "trigger": "asks about sounds in the night",
-          "requires": "character.helen >= opening",
+          "requires": "character.helen >= opening AND knows_about_move",
           "reveal": "A low whistle in the small hours, always. And once, a sound like metal falling.",
           "sets": ["knows_the_whistle"]
-        },
-        {
-          "id": "the_move",
-          "trigger": "asks why she changed rooms",
-          "reveal": "Repairs to the west wall. She was moved into Julia's room three days ago. Last night she heard the whistle."
         },
         {
           "id": "the_bruises",
@@ -256,15 +253,21 @@
           "sets": ["saw_the_bruises"]
         },
         {
+          "id": "dying_words",
+          "trigger": "asks what the sister said or did at the end",
+          "requires": "character.helen >= opening AND knows_the_whistle",
+          "reveal": "She got as far as the corridor. She said the words 'the speckled band' and then she was gone."
+        },
+        {
           "id": "tonight",
           "trigger": "asks what she is afraid of, or what she expects",
-          "requires": "character.helen >= trusting",
+          "requires": "character.helen >= trusting AND knows_the_whistle",
           "reveal": "She says she will not survive tonight. She says it plainly, as a fact she has already accepted."
         }
       ],
       "exits": [
-        { "id": "to_commons", "when": "player decides to look into the will, the estate, or the money", "to": "s3_commons" },
-        { "id": "to_surrey", "when": "player sets off for Stoke Moran", "requires": "ready_to_travel", "to": "s4_exterior" }
+        { "id": "to_commons", "when": "player decides to look into the will, the estate, or the money", "to": "s3_commons", "transition": "A cab into the city, the usual traffic. The clerk's office smells of dust and old paper before you've even sat down." },
+        { "id": "to_surrey", "when": "player sets off for Stoke Moran", "requires": "ready_to_travel", "to": "s4_exterior", "transition": "The carriage ride passes mostly in silence. Helen watches the countryside change. You arrive as the light is going." }
       ],
       "guarded_events": [
         {

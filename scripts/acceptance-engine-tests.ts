@@ -221,6 +221,7 @@ async function testSurreyGate(client: DbClient) {
         disposition_changes: [],
         invented: [],
         refused: false,
+        narration_implies_departure: false,
       }),
       JSON.stringify({
         narration: "You set off for Stoke Moran at once, undeterred.",
@@ -229,6 +230,7 @@ async function testSurreyGate(client: DbClient) {
         disposition_changes: [],
         invented: [],
         refused: false,
+        narration_implies_departure: false,
       }),
     ]
   );
@@ -259,6 +261,7 @@ async function testDispositionGatedDiscoverable(client: DbClient) {
         disposition_changes: [],
         invented: [],
         refused: false,
+        narration_implies_departure: false,
       }),
       JSON.stringify({
         narration: "She tells you all about the whistle in the night, again.",
@@ -267,6 +270,7 @@ async function testDispositionGatedDiscoverable(client: DbClient) {
         disposition_changes: [],
         invented: [],
         refused: false,
+        narration_implies_departure: false,
       }),
     ]
   );
@@ -314,6 +318,7 @@ async function testRoylottNeverRises(client: DbClient) {
         disposition_changes: [{ character: "roylott", direction: "up", reason: "player was reasonable and charming" }],
         invented: [],
         refused: false,
+        narration_implies_departure: false,
       }),
     ]
   );
@@ -360,6 +365,7 @@ async function testStrikeWithoutAllClues(client: DbClient) {
         disposition_changes: [],
         invented: [],
         refused: false,
+        narration_implies_departure: false,
       }),
       JSON.stringify({
         narration: "You strike out in the dark at the ventilator, again.",
@@ -368,6 +374,7 @@ async function testStrikeWithoutAllClues(client: DbClient) {
         disposition_changes: [],
         invented: [],
         refused: false,
+        narration_implies_departure: false,
       }),
     ]
   );
@@ -413,6 +420,7 @@ async function testLampReachesTooLate(client: DbClient) {
         disposition_changes: [],
         invented: [],
         refused: false,
+        narration_implies_departure: false,
       }),
     ]
   );

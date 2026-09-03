@@ -34,6 +34,7 @@ function modelReturning(name: string, fields: Record<string, unknown>): ModelAda
           disposition_changes: [],
           invented: [],
           refused: false,
+          narration_implies_departure: false,
           ...fields,
         }),
       };

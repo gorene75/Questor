@@ -116,7 +116,11 @@ function describeExit(exit: ExitSpec, ctx: ExprContext, phase: string): string {
 
   const status = available ? "available" : "unavailable";
   const reasonText = reasons.length > 0 ? ` — ${reasons.join(", ")}` : "";
-  return `- ${exit.id} (${status}): "${exit.when}" -> ${exit.to}${reasonText}`;
+  // transition is only worth showing once the exit could actually be taken
+  // this turn — an author's departure text for an exit that's still locked
+  // would just be noise (and a spoiler of sorts) attached to an unavailable line.
+  const transitionText = available && exit.transition ? ` — if taken, narrate the departure as: ${exit.transition}` : "";
+  return `- ${exit.id} (${status}): "${exit.when}" -> ${exit.to}${reasonText}${transitionText}`;
 }
 
 function describeDiscoverable(d: DiscoverableSpec, ctx: ExprContext): string {
