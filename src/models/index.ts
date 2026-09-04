@@ -6,8 +6,16 @@ import { createWorkersAiAdapter } from "./workersai.ts";
 
 export interface ModelAdapter {
   name: string;
+  /**
+   * systemStatic and systemDynamic are always concatenated to form the full
+   * system prompt — the split exists only so an adapter that supports
+   * prompt caching can mark a breakpoint after the static (session-
+   * invariant) half. An adapter without caching support may simply join
+   * them.
+   */
   complete(
-    system: string,
+    systemStatic: string,
+    systemDynamic: string,
     user: string
   ): Promise<{
     text: string;

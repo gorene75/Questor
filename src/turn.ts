@@ -33,19 +33,6 @@ export interface ModelTurnResponse {
   disposition_changes: DispositionChange[];
   invented: string[];
   refused: boolean;
-  /**
-   * Self-report: does this turn's own `narration` describe the player
-   * having arrived somewhere else, or having completed a departure —
-   * "you arrive at...", "the cab pulls up outside...", "you are now in..."?
-   * Cross-checked against `exit_id`: true with `exit_id: null` is rejected,
-   * since narrating a scene change the engine never committed produces two
-   * contradictory realities (the DB says one location, the text says
-   * another). This catches an honest-but-mistaken self-report; it cannot
-   * catch a model that narrates arrival while also reporting `false` here —
-   * that's a real, acknowledged gap in a self-report-based check, not a
-   * classifier over the actual prose.
-   */
-  narration_implies_departure: boolean;
   /** Pure narrative flavor, never gating — only used at all when the quest configures optional clock.story_time, and even then only as a fallback behind an exit's own costs_minutes. Phase and any deadline are driven entirely by clock.advances_on, never by this. */
   minutes_elapsed?: number;
 }
@@ -59,6 +46,20 @@ export interface TurnResult {
 }
 
 const FALLBACK_NARRATION = "The moment passes without incident.";
+
+// Unbounded growth was confirmed in the prompt audit (~65 chars/turn, never
+// shrinking) — invented texture is cosmetic flavor, not load-bearing, so
+// only the most recent entries are worth keeping in context.
+const MAX_INVENTED = 15;
+
+/** Keeps each string's LAST occurrence only, preserving overall order — a
+ * re-invented detail (same text reported again) counts as "still relevant"
+ * rather than aging out early. */
+function dedupeKeepLast(items: string[]): string[] {
+  const lastIndex = new Map<string, number>();
+  items.forEach((item, i) => lastIndex.set(item, i));
+  return items.filter((item, i) => lastIndex.get(item) === i);
+}
 
 // ---- parsing ----
 
@@ -115,9 +116,6 @@ function parseModelResponse(text: string): ModelTurnResponse {
     throw new Error("'invented' must be an array of strings");
   }
   if (typeof obj.refused !== "boolean") throw new Error("'refused' must be a boolean");
-  if (typeof obj.narration_implies_departure !== "boolean") {
-    throw new Error("'narration_implies_departure' must be a boolean");
-  }
 
   // A suggestion, not a contract field — silently dropped rather than
   // rejected if missing or nonsensical, since an authored costs_minutes or
@@ -135,7 +133,6 @@ function parseModelResponse(text: string): ModelTurnResponse {
     disposition_changes: dispositionChanges,
     invented: obj.invented as string[],
     refused: obj.refused,
-    narration_implies_departure: obj.narration_implies_departure,
     minutes_elapsed: minutesElapsed,
   };
 }
@@ -167,21 +164,6 @@ function validateTurnResponse(
 ): string[] {
   const errors: string[] = [];
   const ctx = buildContext(quest, session.flags, session.characters);
-
-  // The location bug: exit_id is the only thing that ever moves
-  // current_scene, but nothing previously stopped the narration itself from
-  // describing an arrival or departure the engine never committed — two
-  // contradictory realities, the DB in one place and the displayed text in
-  // another. narration_implies_departure is a self-report the model must
-  // reconcile with exit_id every turn; claiming the narration implies
-  // departure while exit_id is null is rejected outright, with guidance
-  // steering the retry back to the scene the player is actually still in.
-  if (response.narration_implies_departure && response.exit_id === null) {
-    errors.push(
-      "narration_implies_departure is true but exit_id is null — you are still in the current scene. " +
-        "Describe the attempt, the refusal, or what's actually here — not arrival somewhere else."
-    );
-  }
 
   if (response.exit_id !== null) {
     const exit = (scene.exits ?? []).find((e) => e.id === response.exit_id);
@@ -264,7 +246,8 @@ interface Attempt {
 
 async function attemptTurn(
   model: ModelAdapter,
-  systemPrompt: string,
+  systemStatic: string,
+  systemDynamic: string,
   baseUser: string,
   priorErrors: string[] | null,
   quest: Quest,
@@ -280,7 +263,7 @@ async function attemptTurn(
     : baseUser;
 
   const modelCallStart = Date.now();
-  const { text, inputTokens, outputTokens } = await model.complete(systemPrompt, userSent);
+  const { text, inputTokens, outputTokens } = await model.complete(systemStatic, systemDynamic, userSent);
   const modelCallMs = Date.now() - modelCallStart;
 
   const validationStart = Date.now();
@@ -298,7 +281,7 @@ async function attemptTurn(
   const validationMs = Date.now() - validationStart;
 
   return {
-    promptSent: `[SYSTEM]\n${systemPrompt}\n\n[USER]\n${userSent}`,
+    promptSent: `[SYSTEM]\n${systemStatic}\n\n${systemDynamic}\n\n[USER]\n${userSent}`,
     rawText: text,
     parsed,
     validation: { valid: errors.length === 0, errors },
@@ -428,7 +411,7 @@ function computeNextState(
     characters[change.character] = clampedStep(characterSpec, currentLevel, change.direction);
   }
 
-  const invented = [...session.invented, ...response.invented];
+  const invented = dedupeKeepLast([...session.invented, ...response.invented]).slice(-MAX_INVENTED);
   const transcript: TurnRecord[] = [...session.transcript, { player_input: playerInput, narration: response.narration }];
 
   let currentScene = session.current_scene;
@@ -708,17 +691,17 @@ export async function processTurn(params: {
     idle_turns: session.idle_turns,
     pressure_fired: session.fired_beats.includes(`${session.current_scene}#pressure`),
   };
-  const { system: systemPrompt, user: baseUser } = buildPromptParts(quest, sessionState, session.transcript, playerInput);
+  const { systemStatic, systemDynamic, user: baseUser } = buildPromptParts(quest, sessionState, session.transcript, playerInput);
 
   const turnIndex = session.transcript.length;
   const turnStart = Date.now();
 
   const attempts: Attempt[] = [];
-  attempts.push(await attemptTurn(model, systemPrompt, baseUser, null, quest, scene, session));
+  attempts.push(await attemptTurn(model, systemStatic, systemDynamic, baseUser, null, quest, scene, session));
 
   let final = attempts[0]!;
   if (!final.validation.valid) {
-    const attempt2 = await attemptTurn(model, systemPrompt, baseUser, final.validation.errors, quest, scene, session);
+    const attempt2 = await attemptTurn(model, systemStatic, systemDynamic, baseUser, final.validation.errors, quest, scene, session);
     attempts.push(attempt2);
     final = attempt2;
   }

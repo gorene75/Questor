@@ -15,7 +15,7 @@ const model = selectModel({
 });
 console.log(`adapter: ${model.name}`);
 try {
-  const result = await model.complete(system, user);
+  const result = await model.complete(system, "", user);
   console.log(JSON.stringify(result, null, 2));
 } catch (err) {
   console.log(`  (skipped: ${err instanceof Error ? err.message : String(err)})`);
@@ -37,5 +37,5 @@ const workersModel = selectModel({
   AI: fakeAi,
 });
 console.log(`adapter: ${workersModel.name}`);
-const workersResult = await workersModel.complete(system, user);
+const workersResult = await workersModel.complete(system, "", user);
 console.log(JSON.stringify(workersResult, null, 2));

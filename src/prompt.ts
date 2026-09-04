@@ -220,14 +220,37 @@ function buildCharacterBlock(charId: string, character: CharacterSpec, session: 
   ].join("\n");
 }
 
+/** Omitted `known_when` defaults to known from the start — the common case
+ * for a character already named as case background in canon.facts. */
+function isCharacterKnown(character: CharacterSpec, ctx: ExprContext): boolean {
+  return character.known_when ? evaluateExpression(character.known_when, ctx) : true;
+}
+
 function buildCharacters(quest: Quest, session: SessionState): string {
   const scene = findScene(quest, session.current_scene);
+  const ctx = buildExprContext(quest, session);
+  const presentIds = new Set(scene.present ?? []);
+
   const blocks = (scene.present ?? []).map((charId) => {
     const character = quest.characters[charId];
     if (!character) throw new Error(`Scene '${scene.id}' lists unknown character '${charId}'`);
     return buildCharacterBlock(charId, character, session);
   });
-  return blocks.length > 0 ? blocks.join("\n\n") : "(no one present)";
+
+  // Known but not physically here this scene: name and status only, no
+  // behaviour/disposition data — they can be discussed, not acted or spoken
+  // as by the model. Genuinely unknown characters (known_when not yet true)
+  // are omitted entirely, same as any other not-yet-unlocked content.
+  const knownElsewhere = Object.entries(quest.characters)
+    .filter(([id]) => !presentIds.has(id))
+    .filter(([, character]) => isCharacterKnown(character, ctx))
+    .map(([id, character]) => `- ${character.name} (${id}) — known, not present`);
+
+  const sections = [blocks.length > 0 ? blocks.join("\n\n") : "(no one present)"];
+  if (knownElsewhere.length > 0) {
+    sections.push(["Known but not present:", ...knownElsewhere].join("\n"));
+  }
+  return sections.join("\n\n");
 }
 
 function buildInvented(session: SessionState): string {
@@ -259,36 +282,62 @@ function fillPlaceholder(template: string, name: string, content: string): strin
   return template.replace(placeholderLine, () => content);
 }
 
-function fillTemplate(
+// Separates the template's session-invariant half (identity/voice/rules/
+// output contract, plus FRAME/WORLD/CANON — all fixed for the life of a
+// session) from its per-turn half (SCENE/CHARACTERS/INVENTED/HISTORY/INPUT).
+// The split lets a cache breakpoint cover exactly the static half — see
+// buildPromptParts and models/anthropic.ts.
+const DYNAMIC_MARKER = "\n<<<DYNAMIC>>>\n";
+
+function splitTemplate(): { staticTemplate: string; dynamicTemplate: string } {
+  const markerIndex = PLAY_AGENT_TEMPLATE.indexOf(DYNAMIC_MARKER);
+  if (markerIndex === -1) {
+    throw new Error(`Prompt template is missing the ${DYNAMIC_MARKER.trim()} marker separating static from dynamic content`);
+  }
+  return {
+    staticTemplate: PLAY_AGENT_TEMPLATE.slice(0, markerIndex),
+    dynamicTemplate: PLAY_AGENT_TEMPLATE.slice(markerIndex + DYNAMIC_MARKER.length),
+  };
+}
+
+export interface PromptParts {
+  systemStatic: string;
+  systemDynamic: string;
+  user: string;
+}
+
+function fillTemplateParts(
   quest: Quest,
   session: SessionState,
   recentHistory: TurnRecord[],
   inputSectionContent: string
-): string {
-  const sections: Record<string, string> = {
-    FRAME: buildFrame(quest),
-    WORLD: buildWorld(quest),
-    CANON: buildCanon(quest),
+): { systemStatic: string; systemDynamic: string } {
+  const { staticTemplate, dynamicTemplate } = splitTemplate();
+
+  let systemStatic = staticTemplate;
+  for (const [name, content] of Object.entries({ FRAME: buildFrame(quest), WORLD: buildWorld(quest), CANON: buildCanon(quest) })) {
+    systemStatic = fillPlaceholder(systemStatic, name, content);
+  }
+
+  let systemDynamic = dynamicTemplate;
+  for (const [name, content] of Object.entries({
     SCENE: buildScene(quest, session),
     CHARACTERS: buildCharacters(quest, session),
     INVENTED: buildInvented(session),
     HISTORY: buildHistory(recentHistory),
     INPUT: inputSectionContent,
-  };
-
-  let output = PLAY_AGENT_TEMPLATE;
-  for (const [name, content] of Object.entries(sections)) {
-    output = fillPlaceholder(output, name, content);
+  })) {
+    systemDynamic = fillPlaceholder(systemDynamic, name, content);
   }
-  return output;
+
+  return { systemStatic: systemStatic.trim(), systemDynamic: systemDynamic.trim() };
 }
 
 /**
- * Single combined string, matching BUILD.md's documented prompt.ts
- * signature — every placeholder filled, including the player's literal
- * input. Kept for eyeballing/debugging (scripts/test-prompt.ts) and
- * backward compatibility; the real model call uses buildPromptParts below,
- * which keeps the player's input out of the instructional block entirely.
+ * Single combined string — the static and dynamic halves joined in order.
+ * Kept for eyeballing/debugging (scripts/test-prompt.ts); the real model
+ * call uses buildPromptParts below, which keeps the two halves (and the
+ * player's input) separate so a cache breakpoint can sit between them.
  */
 export function buildPrompt(
   quest: Quest,
@@ -296,26 +345,36 @@ export function buildPrompt(
   recentHistory: TurnRecord[],
   playerInput: string
 ): string {
-  return fillTemplate(quest, session, recentHistory, playerInput);
+  const { systemStatic, systemDynamic } = fillTemplateParts(quest, session, recentHistory, playerInput);
+  return `${systemStatic}\n\n${systemDynamic}`;
 }
 
 /**
- * Splits the prompt into system (frame/canon/scene/characters/invented/
- * history plus all instructions) and user (just the player's raw input).
- * Sending the whole assembled prompt as a single user-role message — as
- * buildPrompt's output would be, passed through unsplit — reads to a model
- * trained on the system/user convention as a briefing to acknowledge, not a
- * question to answer: live testing on Claude Haiku showed a 100% first-
- * attempt failure rate ("I understand this system prompt completely...
- * what quest are we running?") purely from that structural mismatch, with
- * every turn needing a second call to actually respond.
+ * Splits the prompt into systemStatic (identity/voice/rules/output contract
+ * plus FRAME/WORLD/CANON — identical every turn of a session), systemDynamic
+ * (SCENE/CHARACTERS/INVENTED/HISTORY — changes every turn), and user (just
+ * the player's raw input). Sending the whole assembled prompt as a single
+ * user-role message — as buildPrompt's output would be, passed through
+ * unsplit — reads to a model trained on the system/user convention as a
+ * briefing to acknowledge, not a question to answer: live testing on Claude
+ * Haiku showed a 100% first-attempt failure rate ("I understand this system
+ * prompt completely... what quest are we running?") purely from that
+ * structural mismatch. The static/dynamic split additionally lets a model
+ * adapter that supports prompt caching (see models/anthropic.ts) mark a
+ * cache breakpoint after systemStatic, which is byte-identical across every
+ * turn of a session.
  */
 export function buildPromptParts(
   quest: Quest,
   session: SessionState,
   recentHistory: TurnRecord[],
   playerInput: string
-): { system: string; user: string } {
-  const system = fillTemplate(quest, session, recentHistory, "(sent separately as the next message — respond to it directly)");
-  return { system, user: playerInput };
+): PromptParts {
+  const { systemStatic, systemDynamic } = fillTemplateParts(
+    quest,
+    session,
+    recentHistory,
+    "(sent separately as the next message — respond to it directly)"
+  );
+  return { systemStatic, systemDynamic, user: playerInput };
 }

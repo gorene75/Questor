@@ -38,10 +38,12 @@ function extractUsage(result: unknown): { inputTokens?: number; outputTokens?: n
 export function createWorkersAiAdapter(ai: WorkersAiBinding, model: string): ModelAdapter {
   return {
     name: `workersai:${model}`,
-    async complete(system: string, user: string) {
+    async complete(systemStatic: string, systemDynamic: string, user: string) {
+      // No caching support here — the split only matters to adapters that
+      // have a cache breakpoint to put between the two halves.
       const result = await ai.run(model, {
         messages: [
-          { role: "system", content: system },
+          { role: "system", content: `${systemStatic}\n\n${systemDynamic}` },
           { role: "user", content: user },
         ],
         // Reasoning-style models (e.g. gpt-oss) spend part of this budget on

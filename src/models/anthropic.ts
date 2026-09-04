@@ -14,7 +14,7 @@ interface AnthropicResponse {
 export function createAnthropicAdapter(apiKey: string, model: string): ModelAdapter {
   return {
     name: `anthropic:${model}`,
-    async complete(system: string, user: string) {
+    async complete(systemStatic: string, systemDynamic: string, user: string) {
       const response = await fetch("https://api.anthropic.com/v1/messages", {
         method: "POST",
         headers: {
@@ -29,7 +29,15 @@ export function createAnthropicAdapter(apiKey: string, model: string): ModelAdap
           // that without reintroducing the original oversized-response cost
           // 1024 had.
           max_tokens: 800,
-          system,
+          // systemStatic (identity/voice/rules/output contract + FRAME/
+          // WORLD/CANON) is byte-identical every turn of a session — the
+          // cache breakpoint sits right after it, so turn 1 writes the
+          // cache and every later turn reads it instead of reprocessing
+          // ~20K+ chars of fixed instructions from scratch.
+          system: [
+            { type: "text", text: systemStatic, cache_control: { type: "ephemeral" } },
+            { type: "text", text: systemDynamic },
+          ],
           messages: [{ role: "user", content: user }],
           // claude-sonnet-5 emits extended thinking by default even though
           // nothing here asks for it. Some turns spent the ENTIRE max_tokens
