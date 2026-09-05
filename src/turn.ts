@@ -7,12 +7,13 @@ import { evaluateExpression, type ExprContext } from "./expr.ts";
 import { addMinutes, derivePhaseFromProgress } from "./clock.ts";
 import { buildPromptParts, type SessionState, type TurnRecord } from "./prompt.ts";
 import { selectModel, type ModelAdapter, type ModelEnv } from "./models/index.ts";
-import { findRelationalKnowledge } from "./objects.ts";
+import { findRelationalKnowledge, isPresent } from "./objects.ts";
 import {
   commitTurn,
   discloseRelational,
   discloseSceneAmbient,
   discloseToPlayer,
+  loadObjectPlacement,
   loadPlayerKnowledge,
   loadQuestByVersion,
   loadSession,
@@ -166,7 +167,8 @@ function validateTurnResponse(
   response: ModelTurnResponse,
   quest: Quest,
   scene: SceneSpec,
-  session: Session
+  session: Session,
+  objectPlacement: Record<string, string | null>
 ): string[] {
   const errors: string[] = [];
   const ctx = buildContext(quest, session.flags, session.characters);
@@ -226,7 +228,7 @@ function validateTurnResponse(
       errors.push(`disposition_changes names unknown character '${change.character}'`);
       continue;
     }
-    if (!(scene.present ?? []).includes(change.character)) {
+    if (!isPresent(objectPlacement, change.character, scene.id)) {
       errors.push(`disposition_changes names '${change.character}', who is not present in scene '${scene.id}'`);
     }
   }
@@ -258,7 +260,8 @@ async function attemptTurn(
   priorErrors: string[] | null,
   quest: Quest,
   scene: SceneSpec,
-  session: Session
+  session: Session,
+  objectPlacement: Record<string, string | null>
 ): Promise<Attempt> {
   // system stays stable across a retry — only the user turn grows, with the
   // rejection reason attached to what the model is actually responding to.
@@ -282,7 +285,7 @@ async function attemptTurn(
   }
 
   if (parsed) {
-    errors = errors.concat(validateTurnResponse(parsed, quest, scene, session));
+    errors = errors.concat(validateTurnResponse(parsed, quest, scene, session, objectPlacement));
   }
   const validationMs = Date.now() - validationStart;
 
@@ -694,11 +697,27 @@ export async function processTurn(params: {
   const turnIndex = session.transcript.length;
   const turnStart = Date.now();
 
-  // Experimental object-disclosure mechanism, scoped to s1_baker_street only
-  // (see src/objects.ts, src/db.ts) — every other scene gets known_objects:
-  // undefined and buildCharacters falls back to its normal known_when path.
-  const knownObjects =
-    session.current_scene === "s1_baker_street" ? await loadPlayerKnowledge(client, sessionId) : undefined;
+  // Presence seeding, generic for every scene, not just s1_baker_street: the
+  // moment a scene is freshly entered (scene_turn_count still 0 — true for a
+  // brand-new session's start scene, and true again after any exit/beat/
+  // pressure transition resets it), object_placement is seeded from that
+  // scene's own scene.present. scene.present's only remaining role is this
+  // seed value — it is no longer read as a live presence gate anywhere.
+  // From here on, isPresent (computed from object_placement) decides who
+  // gets a full behaviour block; a genuine departure (moveObject to null or
+  // elsewhere) removes someone from it the same turn it happens, which a
+  // static array never could.
+  if (session.scene_turn_count === 0) {
+    for (const charId of scene.present ?? []) {
+      await moveObject(client, sessionId, charId, scene.id);
+    }
+  }
+
+  // Object-disclosure mechanism (src/objects.ts, src/db.ts) — generic, read
+  // for every scene. Only s1_baker_street has real conditional content
+  // seeded into it so far; every other scene just finds nothing.
+  const knownObjects = await loadPlayerKnowledge(client, sessionId);
+  const objectPlacement = await loadObjectPlacement(client, sessionId);
 
   const sessionState: SessionState = {
     current_scene: session.current_scene,
@@ -710,15 +729,26 @@ export async function processTurn(params: {
     idle_turns: session.idle_turns,
     pressure_fired: session.fired_beats.includes(`${session.current_scene}#pressure`),
     known_objects: knownObjects,
+    object_placement: objectPlacement,
   };
   const { systemStatic, systemDynamic, user: baseUser } = buildPromptParts(quest, sessionState, session.transcript, playerInput);
 
   const attempts: Attempt[] = [];
-  attempts.push(await attemptTurn(model, systemStatic, systemDynamic, baseUser, null, quest, scene, session));
+  attempts.push(await attemptTurn(model, systemStatic, systemDynamic, baseUser, null, quest, scene, session, objectPlacement));
 
   let final = attempts[0]!;
   if (!final.validation.valid) {
-    const attempt2 = await attemptTurn(model, systemStatic, systemDynamic, baseUser, final.validation.errors, quest, scene, session);
+    const attempt2 = await attemptTurn(
+      model,
+      systemStatic,
+      systemDynamic,
+      baseUser,
+      final.validation.errors,
+      quest,
+      scene,
+      session,
+      objectPlacement
+    );
     attempts.push(attempt2);
     final = attempt2;
   }
@@ -818,14 +848,27 @@ export async function processTurn(params: {
 
   const next = computeNextState(quest, session, scene, response, playerInput, forcedDegrade);
 
-  if (scene.id === "s1_baker_street") {
-    // Roylott's placement is driven purely by the validated beat landing on
-    // s2_intrusion this turn — never by narration claiming he's arrived.
-    if (next.current_scene === "s2_intrusion") {
-      await moveObject(client, sessionId, "roylott", "s2_intrusion");
+  // Presence seeding, generic: if this turn's validated exit/beat/pressure
+  // transition actually moved the story to a new scene, seed the
+  // destination's present list immediately — same seeding as the
+  // scene_turn_count===0 check above, just re-applied here so
+  // object_placement reflects the destination within the SAME turn that
+  // caused the transition (a beat placing Roylott into s2_intrusion, say),
+  // rather than only from the next turn onward. Never inferred from
+  // narration — next.current_scene only differs here because a validated
+  // exit/beat/guarded_event/pressure event actually fired.
+  if (next.current_scene !== session.current_scene) {
+    const destScene = quest.scenes.find((s) => s.id === next.current_scene);
+    for (const charId of destScene?.present ?? []) {
+      await moveObject(client, sessionId, charId, next.current_scene);
     }
+  }
+
+  if (scene.id === "s1_baker_street") {
     // A real, validated exit to Surrey is the only way stoke_moran becomes
-    // reachable — asking to travel without one never touches this.
+    // reachable — asking to travel without one never touches this. stoke_moran
+    // is a place, never a member of any scene.present list, so it can't ride
+    // the generic seeding above — it stays its own explicit rule.
     if (response.exit_id === "to_surrey") {
       await moveObject(client, sessionId, "stoke_moran", next.current_scene);
     }

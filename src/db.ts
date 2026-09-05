@@ -184,7 +184,9 @@ export async function createSession(client: DbClient, questId: string, modelName
     .single();
 
   if (error) throw new Error(`Failed to create session for quest '${questId}': ${error.message}`);
-  return data as Session;
+  const session = data as Session;
+  await seedInnateKnowledge(client, session.id, quest);
+  return session;
 }
 
 export async function loadSession(client: DbClient, sessionId: string): Promise<Session | null> {
@@ -320,7 +322,18 @@ export async function listTurnLogs(client: DbClient, sessionId: string): Promise
   return (data ?? []) as TurnLogRow[];
 }
 
-// ---- object-graph disclosure (experimental, scoped to s1_baker_street) ----
+// ---- object-graph disclosure (three-bucket rebuild: innate / conditional / engine-rule) ----
+//
+// Every piece of quest content belongs to exactly one bucket:
+//   - INNATE: always known from turn one by design (era, setting, register,
+//     premise) — pre-seeded once per session (seedInnateKnowledge), source
+//     "innate". Not gated; recorded so the ledger accounts for it instead of
+//     silently sitting in a static prompt block.
+//   - CONDITIONAL: must be earned through play — everything below. Mechanism
+//     works for any scene/quest; only s1_baker_street has real conditional
+//     content converted so far (see quests/speckled-band.json).
+//   - ENGINE-RULE: validator/requires/clock/deadline logic — never touches
+//     player_knowledge at all, stays exactly where it already lives.
 //
 // Three tables, three write paths, never crossed:
 //   - game_objects: world truth for a quest — hand-authored, static, seeded
@@ -370,8 +383,31 @@ export interface PlayerKnowledgeRow {
   known: Record<string, unknown>;
   /** Set once this referent's real identity has been disclosed — see discloseRelational. Null until then. */
   merged_into: string | null;
-  /** How this row's content entered player_knowledge — "direct" for a discoverable's own disclosure (discloseToPlayer/discloseRelational, triggered by the player asking something), "observation" for the ambient per-scene bundle (discloseSceneAmbient, triggered by mere presence, not a question). Ledger bookkeeping only; nothing currently gates on it. */
-  source: "direct" | "observation" | null;
+  /** How this row's content entered player_knowledge — "innate" for the one-time session-creation seed (seedInnateKnowledge), "direct" for a discoverable's own disclosure (discloseToPlayer/discloseRelational, triggered by the player asking something), "observation" for the ambient per-scene bundle (discloseSceneAmbient, triggered by mere presence, not a question). Ledger bookkeeping only; nothing currently gates on it. */
+  source: "innate" | "direct" | "observation" | null;
+}
+
+/**
+ * Pre-seeds the one INNATE player_knowledge row for a fresh session: era,
+ * setting, register, and the player's own premise — content that's always
+ * known from turn one by design, never gated. Called once, from
+ * createSession, right after the session row is inserted. Generic for any
+ * quest (falls back gracefully if world isn't declared) — this is not
+ * s1_baker_street-specific, it's session-wide background.
+ */
+export async function seedInnateKnowledge(client: DbClient, sessionId: string, quest: Quest): Promise<void> {
+  const known: Record<string, unknown> = {
+    premise: quest.meta.premise,
+    player_role: quest.meta.player_role,
+  };
+  if (quest.world) {
+    known.setting = quest.world.setting;
+    known.register = quest.world.register;
+  }
+  const { error } = await client
+    .from("player_knowledge")
+    .upsert({ session_id: sessionId, object_id: "world", known, merged_into: null, source: "innate" }, { onConflict: "session_id,object_id" });
+  if (error) throw new Error(`Failed to seed innate knowledge for session '${sessionId}': ${error.message}`);
 }
 
 /** Seeds/replaces the game_objects table from quest.game_objects — the DB copy of this quest's hand-authored world truth. A no-op if the quest declares none. */

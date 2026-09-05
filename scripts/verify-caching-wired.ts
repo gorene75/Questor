@@ -96,6 +96,8 @@ for (let i = 0; i < fullHistory.length; i++) {
     invented: [],
     idle_turns: 0,
     pressure_fired: false,
+    known_objects: {},
+    object_placement: {},
   };
   const { systemStatic, systemDynamic, user } = buildPromptParts(questRow!.graph, sessionState, historyBefore, inputs[i]!);
   const usage = await callAnthropic(systemStatic, systemDynamic, user);

@@ -40,6 +40,8 @@ function baseSession(overrides: Partial<SessionState>): SessionState {
     invented: [],
     idle_turns: 0,
     pressure_fired: false,
+    known_objects: {},
+    object_placement: {},
     ...overrides,
   };
 }

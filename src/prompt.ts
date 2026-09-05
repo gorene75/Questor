@@ -5,6 +5,7 @@ import type { CharacterSpec, DiscoverableSpec, ExitSpec, GuardedEventSpec, Quest
 import { evaluateExpression, type ExprContext } from "./expr.ts";
 import { formatTimeOfDay } from "./clock.ts";
 import { PLAY_AGENT_TEMPLATE } from "./promptTemplate.ts";
+import { isPresent } from "./objects.ts";
 
 export interface SessionState {
   current_scene: string;
@@ -21,16 +22,25 @@ export interface SessionState {
   /** True once this scene's pressure has already forced its on_exhausted guarded_event — suppresses further escalation text, since the opportunity already resolved. */
   pressure_fired: boolean;
   /**
-   * Experimental, scoped to s1_baker_street only: this session's
-   * player_knowledge rows (src/db.ts loadPlayerKnowledge), keyed by object
-   * id (a merged row is keyed under both its original referent and the real
-   * id it merged into). Undefined for every other scene. This is the ONLY
-   * source prompt.ts reads for an object's disclosed content — there is no
-   * import path from this file to game_objects, character_relational_knowledge,
-   * or resolveObject, so an object with no row here is simply never
-   * mentioned, not "mentioned but marked hidden."
+   * This session's player_knowledge rows (src/db.ts loadPlayerKnowledge),
+   * keyed by object id (a merged row is keyed under both its original
+   * referent and the real id it merged into). Generic — read for every
+   * scene, not just s1_baker_street: an id with no row here is simply never
+   * mentioned, not "mentioned but marked hidden." This is the ONLY source
+   * prompt.ts reads for an object's disclosed content — there is no import
+   * path from this file to game_objects, character_relational_knowledge, or
+   * resolveObject.
    */
-  known_objects?: Record<string, { known: Record<string, unknown>; merged_into: string | null }>;
+  known_objects: Record<string, { known: Record<string, unknown>; merged_into: string | null }>;
+  /**
+   * This session's object_placement (src/db.ts loadObjectPlacement), keyed
+   * by object/character id -> current scene id, or null if placed nowhere
+   * right now. Generic for every scene: isPresent(object_placement, id,
+   * current_scene) is what buildCharacters uses instead of scene.present —
+   * scene.present stays in the quest file only as the seed value copied
+   * into object_placement the moment a scene is freshly entered (turn.ts).
+   */
+  object_placement: Record<string, string | null>;
 }
 
 export interface TurnRecord {
@@ -134,14 +144,35 @@ function describeExit(exit: ExitSpec, ctx: ExprContext, phase: string): string {
   return `- ${exit.id} (${status}): "${exit.when}" -> ${exit.to}${reasonText}${transitionText}`;
 }
 
+/**
+ * A discoverable's reveal text is withheld in two cases, both structural
+ * (never a prose "don't say this yet" instruction): `requires` unmet (the
+ * original mechanism), and — new — already fired. "Already fired" is read
+ * from its own `sets` flags all being true; a discoverable declaring no
+ * `sets` has no way to detect this and keeps showing its reveal once
+ * available, same as before (flagged as a known gap for unconverted
+ * discoverables that predate this rework).
+ *
+ * What this does NOT do: withhold reveal text for something available but
+ * never yet triggered. That would need the model to answer correctly on
+ * the very turn that first earns the content, without ever having seen it
+ * — structurally impossible in this engine's single-pass design (the model
+ * narrates and self-reports discovery in the same response; there's no
+ * second pass to fetch the "real" answer after the fact). Doing it anyway
+ * would force the model to invent the content or refuse a question the
+ * game needs answered, which is worse than the exposure being closed here.
+ */
 function describeDiscoverable(d: DiscoverableSpec, ctx: ExprContext): string {
   const available = d.requires ? evaluateExpression(d.requires, ctx) : true;
-  const status = available ? "available" : "unavailable";
+  const alreadyFired = (d.sets ?? []).length > 0 && (d.sets ?? []).every((f) => ctx.flags[f] === true);
 
-  if (available) {
-    return `- ${d.id} (${status}): trigger "${d.trigger}" -> reveal: ${d.reveal}`;
+  if (!available) {
+    return `- ${d.id} (unavailable): trigger "${d.trigger}" — requires '${d.requires}' — reveal withheld until then`;
   }
-  return `- ${d.id} (${status}): trigger "${d.trigger}" — requires '${d.requires}' — reveal withheld until then`;
+  if (alreadyFired) {
+    return `- ${d.id} (already revealed): trigger "${d.trigger}"`;
+  }
+  return `- ${d.id} (available): trigger "${d.trigger}" -> reveal: ${d.reveal}`;
 }
 
 function describeGuardedEvent(ge: GuardedEventSpec, ctx: ExprContext): string {
@@ -179,16 +210,18 @@ function buildScene(quest: Quest, session: SessionState): string {
   const guardedEventLines = (scene.guarded_events ?? []).map((ge) => describeGuardedEvent(ge, ctx));
   const pressureHint = buildPressureHint(scene, session);
 
-  // The room's ambient bundle (discloseSceneAmbient, src/db.ts/turn.ts) is
-  // otherwise write-only bookkeeping — opens_with is shown once at scene
+  // A scene's own ambient bundle (discloseSceneAmbient, src/db.ts/turn.ts)
+  // is otherwise write-only bookkeeping — opens_with is shown once at scene
   // entry but never re-enters HISTORY once it scrolls past the 6-turn
   // window, and buildCharacters only ever surfaces person-shaped
   // known_objects entries. Without this, a later "look around" turn has
   // nothing concrete to ground itself in and starts inventing furniture —
   // observed directly against claude-sonnet-5 (bell-pull/ventilator details
-  // that belong to a much later scene) before this line was added.
-  const ambient = session.current_scene === "s1_baker_street" ? session.known_objects?.[scene.id] : undefined;
-  const ambientDescription = ambient?.known.description;
+  // that belong to a much later scene) before this line was added. Read
+  // generically here (keyed by whatever scene we're in, not hardcoded to
+  // s1_baker_street) — only s1_baker_street actually seeds one so far, so
+  // every other scene just finds no row and renders nothing.
+  const ambientDescription = session.known_objects[scene.id]?.known.description;
 
   const lines = [
     session.story_time ? `Current time: ${formatTimeOfDay(session.story_time)} (${session.phase})` : `Current phase: ${session.phase}`,
@@ -243,50 +276,40 @@ function buildCharacterBlock(charId: string, character: CharacterSpec, session: 
   ].join("\n");
 }
 
-/** Omitted `known_when` defaults to known from the start — the common case
- * for a character already named as case background in canon.facts. */
-function isCharacterKnown(character: CharacterSpec, ctx: ExprContext): boolean {
-  return character.known_when ? evaluateExpression(character.known_when, ctx) : true;
-}
-
 function buildCharacters(quest: Quest, session: SessionState): string {
   const scene = findScene(quest, session.current_scene);
-  const ctx = buildExprContext(quest, session);
-  const presentIds = new Set(scene.present ?? []);
 
-  const blocks = (scene.present ?? []).map((charId) => {
-    const character = quest.characters[charId];
-    if (!character) throw new Error(`Scene '${scene.id}' lists unknown character '${charId}'`);
-    return buildCharacterBlock(charId, character, session);
-  });
+  // Presence is computed, never a static per-scene declaration: an id is
+  // present iff object_placement actually puts it in this scene right now.
+  // scene.present still exists in the quest file, but only as the seed
+  // value turn.ts copies into object_placement the moment a scene is freshly
+  // entered — once play is underway, a real departure (moveObject to null
+  // or elsewhere) is what actually removes someone from this block, on the
+  // same turn it happens. Same mechanism for every scene, not just
+  // s1_baker_street.
+  const presentIds = new Set(Object.keys(quest.characters).filter((id) => isPresent(session.object_placement, id, scene.id)));
+
+  const blocks = [...presentIds].map((charId) => buildCharacterBlock(charId, quest.characters[charId]!, session));
 
   // Known but not physically here this scene: name and status only, no
   // behaviour/disposition data — they can be discussed, not acted or spoken
-  // as by the model.
-  //
-  // s1_baker_street runs the stricter object-disclosure experiment instead
-  // of the known_when default: a not-present character is mentioned only if
-  // this session's player_knowledge (session.known_objects) actually has a
-  // disclosed row for them, built from just the fields discloseToPlayer
+  // as by the model. Sourced entirely from player_knowledge — a not-present
+  // character is mentioned only if this session's known_objects actually
+  // has a disclosed row for them, built from just the fields a disclosure
   // copied over — never the character's full canon data. No row means no
-  // mention at all, not "mentioned but marked hidden." Every other scene
-  // keeps the known_when-default-true behaviour unchanged.
-  const knownElsewhere =
-    session.current_scene === "s1_baker_street" && session.known_objects
-      ? Object.entries(quest.characters)
-          .filter(([id]) => !presentIds.has(id))
-          .filter(([id]) => session.known_objects![id] && Object.keys(session.known_objects![id]!.known).length > 0)
-          .map(([id]) => {
-            const knowledge = session.known_objects![id]!;
-            const fields = Object.entries(knowledge.known)
-              .map(([k, v]) => `${k}: ${v}`)
-              .join("; ");
-            return `- ${id} (known: ${fields}) — not present`;
-          })
-      : Object.entries(quest.characters)
-          .filter(([id]) => !presentIds.has(id))
-          .filter(([, character]) => isCharacterKnown(character, ctx))
-          .map(([id, character]) => `- ${character.name} (${id}) — known, not present`);
+  // mention at all, not "mentioned but marked hidden." Generic for every
+  // scene: the old known_when-defaults-to-known-from-the-start mechanism is
+  // gone — "unknown until disclosed" is now the only behaviour, everywhere.
+  const knownElsewhere = Object.entries(quest.characters)
+    .filter(([id]) => !presentIds.has(id))
+    .filter(([id]) => session.known_objects[id] && Object.keys(session.known_objects[id]!.known).length > 0)
+    .map(([id]) => {
+      const knowledge = session.known_objects[id]!;
+      const fields = Object.entries(knowledge.known)
+        .map(([k, v]) => `${k}: ${v}`)
+        .join("; ");
+      return `- ${id} (known: ${fields}) — not present`;
+    });
 
   const sections = [blocks.length > 0 ? blocks.join("\n\n") : "(no one present)"];
   if (knownElsewhere.length > 0) {

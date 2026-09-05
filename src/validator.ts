@@ -25,8 +25,6 @@ export interface CharacterSpec {
   moves_away: string[];
   never_moves_for: string[];
   at_level: Record<string, AtLevelSpec>;
-  /** Expression (same syntax as a discoverable's `requires`) gating when this character becomes known — nameable/discussable but not yet able to appear or act. Omit to default to known from the start (the common case: a character already named in canon.facts as case background). Independent of scene.present, which gates actually being able to act/speak. */
-  known_when?: string;
 }
 
 export interface DiscoverableSpec {
@@ -490,11 +488,6 @@ export function validateQuest(quest: Quest): ValidationResult {
     return true;
   }
 
-  for (const [charId, character] of Object.entries(quest.characters ?? {})) {
-    if (character.known_when) {
-      checkGatingExpression(character.known_when, `character '${charId}' known_when`);
-    }
-  }
 
   const declaredGameObjects = new Set<string>();
   for (const obj of quest.game_objects ?? []) {

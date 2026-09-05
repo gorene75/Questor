@@ -120,6 +120,7 @@ await upsertQuest(client, quest);
     idle_turns: after1!.idle_turns,
     pressure_fired: false,
     known_objects: await loadPlayerKnowledge(client, session.id),
+    object_placement: placementBeforeForce,
   };
   const prompt = buildPrompt(questRow, forceState, after1!.transcript as unknown as TurnRecord[], "does he burst in right now?");
   const placementAfterForce = await loadObjectPlacement(client, session.id);
@@ -157,6 +158,7 @@ await upsertQuest(client, quest);
     idle_turns: sessionRow!.idle_turns,
     pressure_fired: false,
     known_objects: knowledge,
+    object_placement: {},
   };
   const prompt = buildPrompt(quest, state, [], "where is the will?");
   const noInventedLocation = !prompt.includes("family solicitor") && !prompt.includes("Held by the family solicitor");
@@ -280,6 +282,7 @@ await upsertQuest(client, quest);
     idle_turns: sessionRow!.idle_turns,
     pressure_fired: false,
     known_objects: after,
+    object_placement: placement,
   };
   const prompt = buildPrompt(quest, state, sessionRow!.transcript as unknown as TurnRecord[], "did we arrive yet?");
   const noPlaceLeak = !prompt.includes("crumbling manor house");

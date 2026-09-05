@@ -13,25 +13,12 @@ const session: SessionState = {
   current_scene: "s1_baker_street",
   phase: "morning",
   story_time: "1883-04-06T09:40:00",
+  // Spread the quest's own declared flags first (keeps this fixture in sync
+  // as the quest gains new flags) and override only the ones this scenario
+  // actually needs non-default.
   flags: {
+    ...quest.flags,
     heard_the_account: true,
-    knows_about_move: false,
-    knows_the_whistle: false,
-    saw_the_bruises: false,
-    knows_the_will: false,
-    met_roylott: false,
-    saw_sham_repairs: false,
-    saw_dummy_bellpull: false,
-    saw_clamped_bed: false,
-    saw_ventilator: false,
-    saw_safe: false,
-    saw_milk: false,
-    saw_lash: false,
-    saw_chair_marks: false,
-    roylott_suspects: false,
-    missed_account: false,
-    missed_bedroom_details: false,
-    missed_roylott_room: false,
   },
   characters: {
     helen: "opening",
@@ -43,6 +30,8 @@ const session: SessionState = {
   ],
   idle_turns: 0,
   pressure_fired: false,
+  known_objects: {},
+  object_placement: { helen: "s1_baker_street", watson: "s1_baker_street" },
 };
 
 // 8 fake turns, to prove HISTORY caps at the last 6 rather than the full transcript.

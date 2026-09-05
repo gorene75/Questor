@@ -73,16 +73,7 @@
     }
   },
   "canon": {
-    "facts": [
-      "Julia Stoner died two years ago in her bedroom at Stoke Moran, two weeks before her wedding.",
-      "Her door was locked from within, the shutters barred. No wound was ever found.",
-      "She staggered into the corridor, said the words 'the speckled band', and died.",
-      "Helen is newly engaged, and has been moved into Julia's old room because of repairs to the west wall.",
-      "Dr Grimesby Roylott is the stepfather. Violent, ruined, and clever. He spent many years abroad.",
-      "Under the mother's will, Roylott loses most of his income for each stepdaughter who marries.",
-      "Gypsies camp on the grounds with Roylott's permission.",
-      "Roylott keeps a cheetah and a baboon loose on the estate."
-    ],
+    "facts": [],
     "secrets": [
       "Roylott keeps a swamp adder in the safe. He sends it through the ventilator and down the bell-pull to the bed. The whistle recalls it, the milk rewards it, the lash handles it.",
       "The repairs are a pretext. There is nothing wrong with the wall.",
@@ -229,7 +220,13 @@
     "roylott_suspects": false,
     "missed_account": false,
     "missed_bedroom_details": false,
-    "missed_roylott_room": false
+    "missed_roylott_room": false,
+    "stepfather_named": false,
+    "knows_stepfather_temperament": false,
+    "heard_about_the_will": false,
+    "self_identified": false,
+    "heard_dying_words": false,
+    "heard_fear_tonight": false
   },
   "derived": {
     "understands_room": "(saw_dummy_bellpull AND saw_clamped_bed AND saw_ventilator) AND (saw_safe OR saw_milk OR saw_lash OR saw_chair_marks)",
@@ -248,7 +245,6 @@
       ],
       "truths": [
         "She has no idea how her sister died. She is not concealing a theory; she has none.",
-        "There are five livid fingermarks on her wrist, visible only if the player looks at her hands.",
         "She will not accuse Roylott of murder in words."
       ],
       "impossible": [
@@ -274,7 +270,40 @@
               "name",
               "role"
             ]
-          }
+          },
+          "sets": [
+            "stepfather_named"
+          ]
+        },
+        {
+          "id": "stepfather_temperament",
+          "trigger": "asks what he's like, whether he's dangerous, or his temperament",
+          "requires": "stepfather_named",
+          "reveal": "'He is not a safe man,' she says. 'Ruined money, a temper that doesn't cool. He was abroad for years before any of this.'",
+          "discloses": {
+            "holder_id": "helen",
+            "subject_ref": "stepfather",
+            "fields": [
+              "temperament"
+            ]
+          },
+          "sets": [
+            "knows_stepfather_temperament"
+          ]
+        },
+        {
+          "id": "about_the_will",
+          "trigger": "asks about the will, the money, or the inheritance",
+          "reveal": "'There's a will,' she says. 'Money from my mother — it goes to whichever of us marries, and away from him.' She looks almost surprised to have said it.",
+          "discloses": {
+            "object_id": "the_will",
+            "fields": [
+              "summary"
+            ]
+          },
+          "sets": [
+            "heard_about_the_will"
+          ]
         },
         {
           "id": "who_am_i",
@@ -287,7 +316,10 @@
               "role",
               "methods"
             ]
-          }
+          },
+          "sets": [
+            "self_identified"
+          ]
         },
         {
           "id": "the_move",
@@ -320,13 +352,19 @@
           "id": "dying_words",
           "trigger": "asks what the sister said or did at the end",
           "requires": "character.helen >= opening AND knows_the_whistle",
-          "reveal": "She got as far as the corridor. She said the words 'the speckled band' and then she was gone."
+          "reveal": "She got as far as the corridor. She said the words 'the speckled band' and then she was gone.",
+          "sets": [
+            "heard_dying_words"
+          ]
         },
         {
           "id": "tonight",
           "trigger": "asks what she is afraid of, or what she expects",
           "requires": "character.helen >= trusting AND knows_the_whistle",
-          "reveal": "She says she will not survive tonight. She says it plainly, as a fact she has already accepted."
+          "reveal": "She says she will not survive tonight. She says it plainly, as a fact she has already accepted.",
+          "sets": [
+            "heard_fear_tonight"
+          ]
         }
       ],
       "exits": [
@@ -876,7 +914,8 @@
       "subject_object_id": "roylott",
       "facts": {
         "name": "Dr Grimesby Roylott",
-        "role": "Helen's stepfather"
+        "role": "Helen's stepfather",
+        "temperament": "Violent, ruined, and clever. Spent many years abroad before this."
       }
     }
   ]
