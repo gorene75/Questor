@@ -20,6 +20,15 @@ export interface SessionState {
   idle_turns: number;
   /** True once this scene's pressure has already forced its on_exhausted guarded_event — suppresses further escalation text, since the opportunity already resolved. */
   pressure_fired: boolean;
+  /**
+   * Experimental, scoped to s1_baker_street only: this session's
+   * player_knowledge rows (src/db.ts loadPlayerKnowledge), keyed by object
+   * id. Undefined for every other scene. This is the ONLY source prompt.ts
+   * reads for an object's disclosed content — there is no import path from
+   * this file to game_objects or resolveObject, so an object with no row
+   * here is simply never mentioned, not "mentioned but marked hidden."
+   */
+  known_objects?: Record<string, { known: Record<string, unknown>; present: boolean }>;
 }
 
 export interface TurnRecord {
@@ -239,12 +248,31 @@ function buildCharacters(quest: Quest, session: SessionState): string {
 
   // Known but not physically here this scene: name and status only, no
   // behaviour/disposition data — they can be discussed, not acted or spoken
-  // as by the model. Genuinely unknown characters (known_when not yet true)
-  // are omitted entirely, same as any other not-yet-unlocked content.
-  const knownElsewhere = Object.entries(quest.characters)
-    .filter(([id]) => !presentIds.has(id))
-    .filter(([, character]) => isCharacterKnown(character, ctx))
-    .map(([id, character]) => `- ${character.name} (${id}) — known, not present`);
+  // as by the model.
+  //
+  // s1_baker_street runs the stricter object-disclosure experiment instead
+  // of the known_when default: a not-present character is mentioned only if
+  // this session's player_knowledge (session.known_objects) actually has a
+  // disclosed row for them, built from just the fields discloseToPlayer
+  // copied over — never the character's full canon data. No row means no
+  // mention at all, not "mentioned but marked hidden." Every other scene
+  // keeps the known_when-default-true behaviour unchanged.
+  const knownElsewhere =
+    session.current_scene === "s1_baker_street" && session.known_objects
+      ? Object.entries(quest.characters)
+          .filter(([id]) => !presentIds.has(id))
+          .filter(([id]) => session.known_objects![id] && Object.keys(session.known_objects![id]!.known).length > 0)
+          .map(([id]) => {
+            const knowledge = session.known_objects![id]!;
+            const fields = Object.entries(knowledge.known)
+              .map(([k, v]) => `${k}: ${v}`)
+              .join("; ");
+            return `- ${id} (known: ${fields}) — not present`;
+          })
+      : Object.entries(quest.characters)
+          .filter(([id]) => !presentIds.has(id))
+          .filter(([, character]) => isCharacterKnown(character, ctx))
+          .map(([id, character]) => `- ${character.name} (${id}) — known, not present`);
 
   const sections = [blocks.length > 0 ? blocks.join("\n\n") : "(no one present)"];
   if (knownElsewhere.length > 0) {

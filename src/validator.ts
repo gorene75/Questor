@@ -35,6 +35,8 @@ export interface DiscoverableSpec {
   requires?: string;
   reveal: string;
   sets?: string[];
+  /** When this discoverable fires, copy these field names from the named game_object's resolved content into the player's player_knowledge row (via discloseToPlayer) instead of — or alongside — setting flags. See src/objects.ts. */
+  discloses?: { object_id: string; fields: string[] };
 }
 
 export interface ExitSpec {
@@ -227,6 +229,14 @@ export interface Quest {
   /** Named worse-but-still-playable states a guarded_event or the clock deadline can fall into instead of blocking or dead-ending. */
   degradations?: Record<string, DegradationSpec>;
   narrator: NarratorSpec;
+  /** World truth, hand-authored and static — the source game_objects rows are seeded from. Never read directly by prompt.ts; only discloseToPlayer (src/objects.ts / src/db.ts) may copy fields out of it into a session's player_knowledge. Experimental, scoped to s1_baker_street only for now — see src/objects.ts. */
+  game_objects?: GameObjectSpec[];
+}
+
+export interface GameObjectSpec {
+  id: string;
+  type: "person" | "place" | "item" | "fact";
+  resolved: Record<string, unknown>;
 }
 
 export interface ValidationResult {
@@ -454,11 +464,28 @@ export function validateQuest(quest: Quest): ValidationResult {
     }
   }
 
+  const declaredGameObjects = new Set<string>();
+  for (const obj of quest.game_objects ?? []) {
+    if (declaredGameObjects.has(obj.id)) {
+      errors.push(`game_objects has a duplicate id '${obj.id}'`);
+    }
+    declaredGameObjects.add(obj.id);
+  }
+
   for (const scene of scenes) {
     // present characters declared
     for (const charId of scene.present ?? []) {
       if (!declaredCharacters.has(charId)) {
         errors.push(`Character '${charId}' referenced in scene '${scene.id}' present list is not declared`);
+      }
+    }
+
+    // discoverable.discloses references a declared game_object
+    for (const d of scene.discoverable ?? []) {
+      if (d.discloses && !declaredGameObjects.has(d.discloses.object_id)) {
+        errors.push(
+          `discoverable '${d.id}' (scene '${scene.id}') discloses.object_id '${d.discloses.object_id}' does not name a declared game_object`
+        );
       }
     }
 

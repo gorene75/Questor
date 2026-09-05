@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { readFileSync } from "node:fs";
-import { createDbClientFromEnv, upsertQuest } from "../src/db.ts";
+import { createDbClientFromEnv, upsertGameObjects, upsertQuest } from "../src/db.ts";
 import { validateQuest, type Quest } from "../src/validator.ts";
 
 const path = process.argv[2] ?? "quests/speckled-band.json";
@@ -21,3 +21,6 @@ for (const w of warnings) console.log(`  - ${w}`);
 const client = createDbClientFromEnv();
 const row = await upsertQuest(client, quest);
 console.log(`\nLoaded '${row.id}' version ${row.version} into the quests table.`);
+
+await upsertGameObjects(client, quest);
+console.log(`Loaded ${quest.game_objects?.length ?? 0} game_objects.`);

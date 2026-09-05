@@ -9,9 +9,12 @@ import { buildPromptParts, type SessionState, type TurnRecord } from "./prompt.t
 import { selectModel, type ModelAdapter, type ModelEnv } from "./models/index.ts";
 import {
   commitTurn,
+  discloseToPlayer,
+  loadPlayerKnowledge,
   loadQuestByVersion,
   loadSession,
   logTurn,
+  setObjectPresent,
   type DbClient,
   type Session,
   type SessionCheckpoint,
@@ -681,6 +684,12 @@ export async function processTurn(params: {
   const scene = quest.scenes.find((s) => s.id === session.current_scene);
   if (!scene) throw new Error(`Session is in unknown scene '${session.current_scene}'`);
 
+  // Experimental object-disclosure mechanism, scoped to s1_baker_street only
+  // (see src/objects.ts, src/db.ts) — every other scene gets known_objects:
+  // undefined and buildCharacters falls back to its normal known_when path.
+  const knownObjects =
+    session.current_scene === "s1_baker_street" ? await loadPlayerKnowledge(client, sessionId) : undefined;
+
   const sessionState: SessionState = {
     current_scene: session.current_scene,
     phase: session.phase,
@@ -690,6 +699,7 @@ export async function processTurn(params: {
     invented: session.invented,
     idle_turns: session.idle_turns,
     pressure_fired: session.fired_beats.includes(`${session.current_scene}#pressure`),
+    known_objects: knownObjects,
   };
   const { systemStatic, systemDynamic, user: baseUser } = buildPromptParts(quest, sessionState, session.transcript, playerInput);
 
@@ -758,6 +768,32 @@ export async function processTurn(params: {
   }
 
   const response = final.parsed!;
+
+  // Object-disclosure side effects, scoped to s1_baker_street. Every id used
+  // here (discoveredId, guarded_event_id, exit_id) already passed
+  // validateTurnResponse by this point — same trust boundary computeNextState
+  // itself relies on. discloseToPlayer/setObjectPresent are the only writers
+  // of player_knowledge; nothing here ever takes the model's word for who's
+  // present or what's been disclosed, only what the engine just validated.
+  if (scene.id === "s1_baker_street") {
+    for (const discoveredId of response.discovered) {
+      const discoverable = (scene.discoverable ?? []).find((d) => d.id === discoveredId);
+      if (discoverable?.discloses) {
+        await discloseToPlayer(client, sessionId, quest, discoverable.discloses.object_id, discoverable.discloses.fields);
+      }
+    }
+    // Helen's presence flip requires the same validated guarded_events gate
+    // as everything else the model reports — never inferred from narration.
+    if (response.guarded_event_id === "helen_departs") {
+      await setObjectPresent(client, sessionId, "helen", false);
+    }
+    // A real, validated exit to Surrey is the only way stoke_moran becomes
+    // reachable/present — asking to travel without one never touches this.
+    if (response.exit_id === "to_surrey") {
+      await setObjectPresent(client, sessionId, "stoke_moran", true);
+    }
+  }
+
   const next = computeNextState(quest, session, scene, response, playerInput, forcedDegrade);
 
   const commitStart = Date.now();
