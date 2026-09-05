@@ -23,12 +23,14 @@ export interface SessionState {
   /**
    * Experimental, scoped to s1_baker_street only: this session's
    * player_knowledge rows (src/db.ts loadPlayerKnowledge), keyed by object
-   * id. Undefined for every other scene. This is the ONLY source prompt.ts
-   * reads for an object's disclosed content — there is no import path from
-   * this file to game_objects or resolveObject, so an object with no row
-   * here is simply never mentioned, not "mentioned but marked hidden."
+   * id (a merged row is keyed under both its original referent and the real
+   * id it merged into). Undefined for every other scene. This is the ONLY
+   * source prompt.ts reads for an object's disclosed content — there is no
+   * import path from this file to game_objects, character_relational_knowledge,
+   * or resolveObject, so an object with no row here is simply never
+   * mentioned, not "mentioned but marked hidden."
    */
-  known_objects?: Record<string, { known: Record<string, unknown>; present: boolean }>;
+  known_objects?: Record<string, { known: Record<string, unknown>; merged_into: string | null }>;
 }
 
 export interface TurnRecord {
@@ -177,8 +179,20 @@ function buildScene(quest: Quest, session: SessionState): string {
   const guardedEventLines = (scene.guarded_events ?? []).map((ge) => describeGuardedEvent(ge, ctx));
   const pressureHint = buildPressureHint(scene, session);
 
+  // The room's ambient bundle (discloseSceneAmbient, src/db.ts/turn.ts) is
+  // otherwise write-only bookkeeping — opens_with is shown once at scene
+  // entry but never re-enters HISTORY once it scrolls past the 6-turn
+  // window, and buildCharacters only ever surfaces person-shaped
+  // known_objects entries. Without this, a later "look around" turn has
+  // nothing concrete to ground itself in and starts inventing furniture —
+  // observed directly against claude-sonnet-5 (bell-pull/ventilator details
+  // that belong to a much later scene) before this line was added.
+  const ambient = session.current_scene === "s1_baker_street" ? session.known_objects?.[scene.id] : undefined;
+  const ambientDescription = ambient?.known.description;
+
   const lines = [
     session.story_time ? `Current time: ${formatTimeOfDay(session.story_time)} (${session.phase})` : `Current phase: ${session.phase}`,
+    ...(typeof ambientDescription === "string" ? ["", `Room (as observed): ${ambientDescription}`] : []),
     "",
     "Truths:",
     joinLines(scene.truths.map((t) => `- ${t}`), "(none)"),

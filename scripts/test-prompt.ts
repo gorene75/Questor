@@ -15,6 +15,7 @@ const session: SessionState = {
   story_time: "1883-04-06T09:40:00",
   flags: {
     heard_the_account: true,
+    knows_about_move: false,
     knows_the_whistle: false,
     saw_the_bruises: false,
     knows_the_will: false,
@@ -28,6 +29,9 @@ const session: SessionState = {
     saw_lash: false,
     saw_chair_marks: false,
     roylott_suspects: false,
+    missed_account: false,
+    missed_bedroom_details: false,
+    missed_roylott_room: false,
   },
   characters: {
     helen: "opening",

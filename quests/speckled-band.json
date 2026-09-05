@@ -268,10 +268,24 @@
           "trigger": "asks about her stepfather, who he is, or his name",
           "reveal": "She says his name like it costs her something: Dr Grimesby Roylott. 'My stepfather,' she says, and stops there.",
           "discloses": {
-            "object_id": "roylott",
+            "holder_id": "helen",
+            "subject_ref": "stepfather",
             "fields": [
               "name",
               "role"
+            ]
+          }
+        },
+        {
+          "id": "who_am_i",
+          "trigger": "asks who he is, his own name, his methods, or his reputation",
+          "reveal": "You are Sherlock Holmes, consulting detective, of Baker Street. What others glance at, you read; Watson has seen you build a stranger's whole day from the mud on his boots. It is why she is here at all.",
+          "discloses": {
+            "object_id": "sherlock",
+            "fields": [
+              "name",
+              "role",
+              "methods"
             ]
           }
         },
@@ -819,6 +833,16 @@
   },
   "game_objects": [
     {
+      "id": "sherlock",
+      "type": "person",
+      "resolved": {
+        "name": "Sherlock Holmes",
+        "role": "Consulting detective, of Baker Street.",
+        "methods": "Observation and deduction — reading a life off a coat sleeve or a hand's callus before a word is spoken.",
+        "background": "Watson's friend and the case's investigator; Helen Stoner has come to him for exactly this reputation."
+      }
+    },
+    {
       "id": "roylott",
       "type": "person",
       "resolved": {
@@ -842,6 +866,17 @@
       "resolved": {
         "name": "Stoke Moran",
         "description": "The Roylott family's crumbling manor house in Surrey."
+      }
+    }
+  ],
+  "character_relational_knowledge": [
+    {
+      "holder_id": "helen",
+      "subject_ref": "stepfather",
+      "subject_object_id": "roylott",
+      "facts": {
+        "name": "Dr Grimesby Roylott",
+        "role": "Helen's stepfather"
       }
     }
   ]

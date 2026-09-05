@@ -35,8 +35,18 @@ export interface DiscoverableSpec {
   requires?: string;
   reveal: string;
   sets?: string[];
-  /** When this discoverable fires, copy these field names from the named game_object's resolved content into the player's player_knowledge row (via discloseToPlayer) instead of — or alongside — setting flags. See src/objects.ts. */
-  discloses?: { object_id: string; fields: string[] };
+  /**
+   * When this discoverable fires, copy fields into the player's
+   * player_knowledge row instead of — or alongside — setting flags. Two
+   * forms: `{ object_id, fields }` copies straight from a declared
+   * game_object's resolved content (via discloseToPlayer) — use this for an
+   * entity whose identity is already established at authoring time (a
+   * place, a fact). `{ holder_id, subject_ref, fields }` instead copies
+   * from a character's own character_relational_knowledge — Helen disclosing
+   * what she personally knows about "her stepfather" before his real
+   * identity (game_object id) has been named at all. See src/objects.ts.
+   */
+  discloses?: { object_id: string; fields: string[] } | { holder_id: string; subject_ref: string; fields: string[] };
 }
 
 export interface ExitSpec {
@@ -231,12 +241,34 @@ export interface Quest {
   narrator: NarratorSpec;
   /** World truth, hand-authored and static — the source game_objects rows are seeded from. Never read directly by prompt.ts; only discloseToPlayer (src/objects.ts / src/db.ts) may copy fields out of it into a session's player_knowledge. Experimental, scoped to s1_baker_street only for now — see src/objects.ts. */
   game_objects?: GameObjectSpec[];
+  /**
+   * What one character's own knowledge holds about ANOTHER entity, under
+   * whatever referent the player used ("her stepfather") — authored and
+   * static, seeded once per quest, same as game_objects. This is where facts
+   * about an entity live before it's been named/placed; `subject_object_id`
+   * links the referent to a real game_object id, but only becomes usable
+   * once that link has itself been disclosed (see discloseRelational,
+   * src/db.ts). Experimental, scoped to s1_baker_street only for now.
+   */
+  character_relational_knowledge?: RelationalKnowledgeSpec[];
 }
 
 export interface GameObjectSpec {
   id: string;
   type: "person" | "place" | "item" | "fact";
   resolved: Record<string, unknown>;
+}
+
+export interface RelationalKnowledgeSpec {
+  /** A declared character id — whose knowledge this is. */
+  holder_id: string;
+  /** How the holder (and, until merged, the player) refers to the subject — e.g. "stepfather". Not itself a game_object id. */
+  subject_ref: string;
+  /** The real game_object id this referent names, once that link is disclosed (see discloseRelational). Omit if the subject is never meant to resolve to a placeable entity. */
+  subject_object_id?: string;
+  facts: Record<string, unknown>;
+  /** Expression (same syntax as a discoverable's `requires`) gating whether the holder is currently willing to disclose this — independent of the discoverable's own `requires`. Omit to allow whenever the discoverable that references it fires. */
+  disclosure_gate?: string;
 }
 
 export interface ValidationResult {
@@ -472,6 +504,26 @@ export function validateQuest(quest: Quest): ValidationResult {
     declaredGameObjects.add(obj.id);
   }
 
+  const declaredRelationalKnowledge = new Set<string>();
+  for (const rk of quest.character_relational_knowledge ?? []) {
+    const key = `${rk.holder_id}:${rk.subject_ref}`;
+    if (declaredRelationalKnowledge.has(key)) {
+      errors.push(`character_relational_knowledge has a duplicate (holder_id, subject_ref) pair '${key}'`);
+    }
+    declaredRelationalKnowledge.add(key);
+    if (!declaredCharacters.has(rk.holder_id)) {
+      errors.push(`character_relational_knowledge holder_id '${rk.holder_id}' is not a declared character`);
+    }
+    if (rk.subject_object_id && !declaredGameObjects.has(rk.subject_object_id)) {
+      errors.push(
+        `character_relational_knowledge '${key}' subject_object_id '${rk.subject_object_id}' does not name a declared game_object`
+      );
+    }
+    if (rk.disclosure_gate) {
+      checkGatingExpression(rk.disclosure_gate, `character_relational_knowledge '${key}' disclosure_gate`);
+    }
+  }
+
   for (const scene of scenes) {
     // present characters declared
     for (const charId of scene.present ?? []) {
@@ -480,12 +532,23 @@ export function validateQuest(quest: Quest): ValidationResult {
       }
     }
 
-    // discoverable.discloses references a declared game_object
+    // discoverable.discloses references a declared game_object, or a
+    // declared (holder_id, subject_ref) pair in character_relational_knowledge
     for (const d of scene.discoverable ?? []) {
-      if (d.discloses && !declaredGameObjects.has(d.discloses.object_id)) {
-        errors.push(
-          `discoverable '${d.id}' (scene '${scene.id}') discloses.object_id '${d.discloses.object_id}' does not name a declared game_object`
-        );
+      if (!d.discloses) continue;
+      if ("object_id" in d.discloses) {
+        if (!declaredGameObjects.has(d.discloses.object_id)) {
+          errors.push(
+            `discoverable '${d.id}' (scene '${scene.id}') discloses.object_id '${d.discloses.object_id}' does not name a declared game_object`
+          );
+        }
+      } else {
+        const key = `${d.discloses.holder_id}:${d.discloses.subject_ref}`;
+        if (!declaredRelationalKnowledge.has(key)) {
+          errors.push(
+            `discoverable '${d.id}' (scene '${scene.id}') discloses references (holder_id, subject_ref) '${key}', which is not declared in character_relational_knowledge`
+          );
+        }
       }
     }
 

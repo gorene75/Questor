@@ -7,14 +7,17 @@ import { evaluateExpression, type ExprContext } from "./expr.ts";
 import { addMinutes, derivePhaseFromProgress } from "./clock.ts";
 import { buildPromptParts, type SessionState, type TurnRecord } from "./prompt.ts";
 import { selectModel, type ModelAdapter, type ModelEnv } from "./models/index.ts";
+import { findRelationalKnowledge } from "./objects.ts";
 import {
   commitTurn,
+  discloseRelational,
+  discloseSceneAmbient,
   discloseToPlayer,
   loadPlayerKnowledge,
   loadQuestByVersion,
   loadSession,
   logTurn,
-  setObjectPresent,
+  moveObject,
   type DbClient,
   type Session,
   type SessionCheckpoint,
@@ -684,6 +687,13 @@ export async function processTurn(params: {
   const scene = quest.scenes.find((s) => s.id === session.current_scene);
   if (!scene) throw new Error(`Session is in unknown scene '${session.current_scene}'`);
 
+  // turnStart now starts here, before loadPlayerKnowledge — that DB read
+  // used to run before this timer existed at all, making its ~120ms
+  // invisible in total_ms and every other logged field. It's real
+  // request-handling time; it belongs in the same clock as the rest.
+  const turnIndex = session.transcript.length;
+  const turnStart = Date.now();
+
   // Experimental object-disclosure mechanism, scoped to s1_baker_street only
   // (see src/objects.ts, src/db.ts) — every other scene gets known_objects:
   // undefined and buildCharacters falls back to its normal known_when path.
@@ -702,9 +712,6 @@ export async function processTurn(params: {
     known_objects: knownObjects,
   };
   const { systemStatic, systemDynamic, user: baseUser } = buildPromptParts(quest, sessionState, session.transcript, playerInput);
-
-  const turnIndex = session.transcript.length;
-  const turnStart = Date.now();
 
   const attempts: Attempt[] = [];
   attempts.push(await attemptTurn(model, systemStatic, systemDynamic, baseUser, null, quest, scene, session));
@@ -772,29 +779,57 @@ export async function processTurn(params: {
   // Object-disclosure side effects, scoped to s1_baker_street. Every id used
   // here (discoveredId, guarded_event_id, exit_id) already passed
   // validateTurnResponse by this point — same trust boundary computeNextState
-  // itself relies on. discloseToPlayer/setObjectPresent are the only writers
-  // of player_knowledge; nothing here ever takes the model's word for who's
-  // present or what's been disclosed, only what the engine just validated.
+  // itself relies on. discloseToPlayer/discloseRelational/moveObject are the
+  // only writers of player_knowledge/object_placement; nothing here ever
+  // takes the model's word for who's present or what's been disclosed, only
+  // what the engine just validated.
   if (scene.id === "s1_baker_street") {
+    // The room itself fails the one-object test (only one action: observe —
+    // no separate open/read/take of "the room"), so its ambient content is
+    // disclosed as one bundle straight from the scene's own static data, not
+    // through a game_objects row. Fires once per entry (scene_turn_count
+    // still 0, i.e. this is the first turn since arriving); idempotent, so a
+    // later re-entry just re-asserts the same content.
+    if (session.scene_turn_count === 0) {
+      await discloseSceneAmbient(client, sessionId, scene.id, { description: scene.opens_with });
+    }
+
+    const ctx = buildContext(quest, session.flags, session.characters);
     for (const discoveredId of response.discovered) {
       const discoverable = (scene.discoverable ?? []).find((d) => d.id === discoveredId);
-      if (discoverable?.discloses) {
-        await discloseToPlayer(client, sessionId, quest, discoverable.discloses.object_id, discoverable.discloses.fields);
+      const discloses = discoverable?.discloses;
+      if (!discloses) continue;
+      if ("object_id" in discloses) {
+        await discloseToPlayer(client, sessionId, quest, discloses.object_id, discloses.fields);
+      } else {
+        const relational = findRelationalKnowledge(quest, discloses.holder_id, discloses.subject_ref);
+        const gateOk = !relational?.disclosure_gate || evaluateExpression(relational.disclosure_gate, ctx);
+        if (gateOk) {
+          await discloseRelational(client, sessionId, quest, discloses.holder_id, discloses.subject_ref, discloses.fields);
+        }
       }
     }
-    // Helen's presence flip requires the same validated guarded_events gate
-    // as everything else the model reports — never inferred from narration.
+    // Helen stepping out requires the same validated guarded_events gate as
+    // everything else the model reports — never inferred from narration.
     if (response.guarded_event_id === "helen_departs") {
-      await setObjectPresent(client, sessionId, "helen", false);
-    }
-    // A real, validated exit to Surrey is the only way stoke_moran becomes
-    // reachable/present — asking to travel without one never touches this.
-    if (response.exit_id === "to_surrey") {
-      await setObjectPresent(client, sessionId, "stoke_moran", true);
+      await moveObject(client, sessionId, "helen", null);
     }
   }
 
   const next = computeNextState(quest, session, scene, response, playerInput, forcedDegrade);
+
+  if (scene.id === "s1_baker_street") {
+    // Roylott's placement is driven purely by the validated beat landing on
+    // s2_intrusion this turn — never by narration claiming he's arrived.
+    if (next.current_scene === "s2_intrusion") {
+      await moveObject(client, sessionId, "roylott", "s2_intrusion");
+    }
+    // A real, validated exit to Surrey is the only way stoke_moran becomes
+    // reachable — asking to travel without one never touches this.
+    if (response.exit_id === "to_surrey") {
+      await moveObject(client, sessionId, "stoke_moran", next.current_scene);
+    }
+  }
 
   const commitStart = Date.now();
   const updatedSession = await commitTurn(client, sessionId, {

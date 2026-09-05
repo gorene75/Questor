@@ -5,7 +5,7 @@ import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Quest } from "./validator.ts";
 import type { TurnRecord } from "./prompt.ts";
 import { derivePhaseFromProgress } from "./clock.ts";
-import { resolveObject } from "./objects.ts";
+import { findRelationalKnowledge, resolveObject } from "./objects.ts";
 
 export type DbClient = SupabaseClient;
 
@@ -322,29 +322,56 @@ export async function listTurnLogs(client: DbClient, sessionId: string): Promise
 
 // ---- object-graph disclosure (experimental, scoped to s1_baker_street) ----
 //
-// game_objects is world truth for a quest — hand-authored, static, seeded
-// from quest.game_objects at load time (upsertGameObjects, mirroring
-// upsertQuest). player_knowledge is what one session has actually learned.
-// discloseToPlayer is the ONLY way content moves from one to the other.
+// Three tables, three write paths, never crossed:
+//   - game_objects: world truth for a quest — hand-authored, static, seeded
+//     from quest.game_objects at load time (upsertGameObjects). Never
+//     mutated during play.
+//   - character_relational_knowledge: what one character's own knowledge
+//     holds about ANOTHER entity, under whatever referent the player used
+//     ("her stepfather") — also authored, static, seeded at load time
+//     (upsertRelationalKnowledge). Never written during play.
+//   - player_knowledge: what one session has actually learned. The only
+//     entry points are discloseToPlayer (from a game_object) and
+//     discloseRelational (from a relational-knowledge row) — the latter is
+//     also the only way a row's merged_into gets set, once the referent's
+//     real identity has itself been disclosed.
+// object_placement is separate again: per-session, session-scoped location
+// for an entity, written only by moveObject. Presence is never stored as a
+// boolean anywhere — it's `objectPlacement[objectId] === currentScene`,
+// computed at read time (see isPresent, src/objects.ts).
+//
 // prompt.ts must only ever read player_knowledge (via loadPlayerKnowledge,
 // attached to SessionState by turn.ts) — it has no import path to
-// game_objects or resolveObject at all, which is what makes the hard rule
-// structural rather than a convention someone could forget.
+// game_objects, character_relational_knowledge, or resolveObject at all,
+// which is what makes the hard rule structural rather than a convention
+// someone could forget.
 
 export interface GameObjectRow {
   id: string;
   quest_id: string;
   type: string;
   resolved: Record<string, unknown>;
-  resolved_at_ref: string | null;
   updated_at: string;
+}
+
+export interface RelationalKnowledgeRow {
+  quest_id: string;
+  holder_id: string;
+  subject_ref: string;
+  subject_object_id: string | null;
+  facts: Record<string, unknown>;
+  disclosure_gate: string | null;
 }
 
 export interface PlayerKnowledgeRow {
   session_id: string;
+  /** Starts as whatever referent the disclosure used (e.g. "stepfather"); may be a real game_object id directly (the_will, stoke_moran) if disclosed that way from the start. */
   object_id: string;
   known: Record<string, unknown>;
-  present: boolean;
+  /** Set once this referent's real identity has been disclosed — see discloseRelational. Null until then. */
+  merged_into: string | null;
+  /** How this row's content entered player_knowledge — "direct" for a discoverable's own disclosure (discloseToPlayer/discloseRelational, triggered by the player asking something), "observation" for the ambient per-scene bundle (discloseSceneAmbient, triggered by mere presence, not a question). Ledger bookkeeping only; nothing currently gates on it. */
+  source: "direct" | "observation" | null;
 }
 
 /** Seeds/replaces the game_objects table from quest.game_objects — the DB copy of this quest's hand-authored world truth. A no-op if the quest declares none. */
@@ -358,14 +385,32 @@ export async function upsertGameObjects(client: DbClient, quest: Quest): Promise
   if (error) throw new Error(`Failed to upsert game_objects for quest '${quest.meta.id}': ${error.message}`);
 }
 
+/** Seeds/replaces character_relational_knowledge from quest.character_relational_knowledge. A no-op if the quest declares none. */
+export async function upsertRelationalKnowledge(client: DbClient, quest: Quest): Promise<void> {
+  const rows = quest.character_relational_knowledge ?? [];
+  if (rows.length === 0) return;
+  const { error } = await client.from("character_relational_knowledge").upsert(
+    rows.map((rk) => ({
+      quest_id: quest.meta.id,
+      holder_id: rk.holder_id,
+      subject_ref: rk.subject_ref,
+      subject_object_id: rk.subject_object_id ?? null,
+      facts: rk.facts,
+      disclosure_gate: rk.disclosure_gate ?? null,
+    })),
+    { onConflict: "quest_id,holder_id,subject_ref" }
+  );
+  if (error) throw new Error(`Failed to upsert character_relational_knowledge for quest '${quest.meta.id}': ${error.message}`);
+}
+
 /**
- * The only way content enters player_knowledge. Copies just the named
- * fields from quest.game_objects[objectId].resolved (via the pure
- * resolveObject) into this session's player_knowledge.known, merging with
- * whatever's already there — never the whole resolved object, so a sparse,
- * partial disclosure (e.g. just a name and role) stays sparse. `present`
- * defaults to false on first disclosure and is left untouched on a repeat
- * disclosure; only setObjectPresent may change it.
+ * Copies just the named fields from quest.game_objects[objectId].resolved
+ * (via the pure resolveObject) into this session's player_knowledge.known,
+ * merging with whatever's already there — never the whole resolved object,
+ * so a sparse, partial disclosure stays sparse. Use only for an entity
+ * whose identity is already established at authoring time; an entity first
+ * known only by referent (e.g. "her stepfather") goes through
+ * discloseRelational instead.
  */
 export async function discloseToPlayer(
   client: DbClient,
@@ -386,10 +431,80 @@ export async function discloseToPlayer(
   const { error } = await client
     .from("player_knowledge")
     .upsert(
-      { session_id: sessionId, object_id: objectId, known, present: existing?.present ?? false },
+      { session_id: sessionId, object_id: objectId, known, merged_into: existing?.merged_into ?? null, source: "direct" },
       { onConflict: "session_id,object_id" }
     );
   if (error) throw new Error(`Failed to disclose '${objectId}' to session '${sessionId}': ${error.message}`);
+}
+
+/**
+ * Copies named fields from a character's own character_relational_knowledge
+ * (holderId's knowledge of subjectRef) into this session's player_knowledge,
+ * keyed under subjectRef — never under the real object id, since that link
+ * isn't known to the player yet. If `fields` includes "name" and the row
+ * declares a subject_object_id, this disclosure also sets merged_into: from
+ * this point on, the referent and the real entity are the same identity as
+ * far as this session's knowledge goes (loadPlayerKnowledge exposes the row
+ * under both keys).
+ */
+export async function discloseRelational(
+  client: DbClient,
+  sessionId: string,
+  quest: Quest,
+  holderId: string,
+  subjectRef: string,
+  fields: string[]
+): Promise<void> {
+  const row = findRelationalKnowledge(quest, holderId, subjectRef);
+  if (!row) {
+    throw new Error(
+      `discloseRelational: quest '${quest.meta.id}' has no character_relational_knowledge for holder '${holderId}', subject_ref '${subjectRef}'`
+    );
+  }
+
+  const existing = await loadOnePlayerKnowledge(client, sessionId, subjectRef);
+  const known: Record<string, unknown> = { ...existing?.known };
+  for (const field of fields) {
+    if (field in row.facts) known[field] = row.facts[field];
+  }
+  const mergedInto = fields.includes("name") && row.subject_object_id ? row.subject_object_id : existing?.merged_into ?? null;
+
+  const { error } = await client
+    .from("player_knowledge")
+    .upsert(
+      { session_id: sessionId, object_id: subjectRef, known, merged_into: mergedInto, source: "direct" },
+      { onConflict: "session_id,object_id" }
+    );
+  if (error) {
+    throw new Error(`Failed to disclose relational '${subjectRef}' (holder '${holderId}') to session '${sessionId}': ${error.message}`);
+  }
+}
+
+/**
+ * Discloses a bundle of ambient content straight from the scene's own static
+ * data (e.g. opens_with) — no game_objects row backs this, because the room
+ * as a whole fails the one-object test (it supports exactly one action,
+ * "observe"; there's no separate open/read/take of "the room"). Fires once
+ * per scene entry, keyed under sceneRef (the scene id); idempotent, so
+ * re-entering the same scene later just re-asserts the same content.
+ * source is always "observation" — this never happens in response to a
+ * specific question, only to being there at all.
+ */
+export async function discloseSceneAmbient(
+  client: DbClient,
+  sessionId: string,
+  sceneRef: string,
+  known: Record<string, unknown>
+): Promise<void> {
+  const existing = await loadOnePlayerKnowledge(client, sessionId, sceneRef);
+  const merged: Record<string, unknown> = { ...existing?.known, ...known };
+  const { error } = await client
+    .from("player_knowledge")
+    .upsert(
+      { session_id: sessionId, object_id: sceneRef, known: merged, merged_into: existing?.merged_into ?? null, source: "observation" },
+      { onConflict: "session_id,object_id" }
+    );
+  if (error) throw new Error(`Failed to disclose scene ambient content for '${sceneRef}' to session '${sessionId}': ${error.message}`);
 }
 
 async function loadOnePlayerKnowledge(client: DbClient, sessionId: string, objectId: string): Promise<PlayerKnowledgeRow | null> {
@@ -403,32 +518,49 @@ async function loadOnePlayerKnowledge(client: DbClient, sessionId: string, objec
   return data as PlayerKnowledgeRow | null;
 }
 
-/** Everything this session has been disclosed so far, keyed by object id. Empty if nothing has been disclosed yet — there is no "undisclosed" row, only an absent one. */
+/**
+ * Everything this session has been disclosed so far, keyed by object id.
+ * A merged row (merged_into set) is exposed under BOTH its original
+ * referent and the real id it merged into, so a lookup by either still
+ * finds it. Empty if nothing has been disclosed yet — there is no
+ * "undisclosed" row, only an absent one.
+ */
 export async function loadPlayerKnowledge(client: DbClient, sessionId: string): Promise<Record<string, PlayerKnowledgeRow>> {
   const { data, error } = await client.from("player_knowledge").select().eq("session_id", sessionId);
   if (error) throw new Error(`Failed to load player_knowledge for session '${sessionId}': ${error.message}`);
   const result: Record<string, PlayerKnowledgeRow> = {};
   for (const row of (data ?? []) as PlayerKnowledgeRow[]) {
     result[row.object_id] = row;
+    if (row.merged_into) result[row.merged_into] = row;
   }
   return result;
 }
 
 /**
- * The ONLY way `present` changes. Callers are exclusively engine code
- * reacting to a validated exit, beat, or guarded event having actually
- * fired this turn — never the model's self-report, never inferred from
- * narration text. Creates a knowledge row (with empty `known`) if none
- * exists yet, so a place/character can become present before anything
- * about it has been disclosed.
+ * The ONLY function permitted to write object_placement.location. Callers
+ * are exclusively engine code reacting to a validated exit, beat, or
+ * guarded event having actually fired this turn — never the model's
+ * self-report, never inferred from narration. location: null means not
+ * currently placed anywhere (an entity that hasn't entered the story yet,
+ * or has stepped out of it).
  */
-export async function setObjectPresent(client: DbClient, sessionId: string, objectId: string, present: boolean): Promise<void> {
-  const existing = await loadOnePlayerKnowledge(client, sessionId, objectId);
+export async function moveObject(client: DbClient, sessionId: string, objectId: string, location: string | null): Promise<void> {
   const { error } = await client
-    .from("player_knowledge")
+    .from("object_placement")
     .upsert(
-      { session_id: sessionId, object_id: objectId, known: existing?.known ?? {}, present },
+      { session_id: sessionId, object_id: objectId, location, updated_at: new Date().toISOString() },
       { onConflict: "session_id,object_id" }
     );
-  if (error) throw new Error(`Failed to set present=${present} for '${objectId}' in session '${sessionId}': ${error.message}`);
+  if (error) throw new Error(`Failed to move '${objectId}' to '${location}' for session '${sessionId}': ${error.message}`);
+}
+
+/** This session's current location for every object that's ever been placed, keyed by object id. Absent key (not null value) means never placed at all. */
+export async function loadObjectPlacement(client: DbClient, sessionId: string): Promise<Record<string, string | null>> {
+  const { data, error } = await client.from("object_placement").select().eq("session_id", sessionId);
+  if (error) throw new Error(`Failed to load object_placement for session '${sessionId}': ${error.message}`);
+  const result: Record<string, string | null> = {};
+  for (const row of (data ?? []) as { object_id: string; location: string | null }[]) {
+    result[row.object_id] = row.location;
+  }
+  return result;
 }

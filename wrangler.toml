@@ -15,4 +15,4 @@ binding = "AI"
 # no separate provider setting. Swap providers/models by changing this value;
 # a session can still override it by passing its own model_name to POST
 # /session (see src/index.ts), the mechanism this default sits on top of.
-MODEL_NAME = "claude-sonnet-4-6"
+MODEL_NAME = "claude-sonnet-5"
